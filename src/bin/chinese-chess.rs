@@ -1,11 +1,4 @@
-use fltk::{
-    app,
-    button::Button,
-    draw,
-    enums::*,
-    prelude::*,
-    window::*,
-};
+use fltk::{app, button::Button, draw, enums::*, prelude::*, window::*};
 
 const CHESS_SIZE: i32 = 60;
 
@@ -47,9 +40,18 @@ fn main() {
             let x = chess.position.x * CHESS_SIZE;
             let y = chess.position.y * CHESS_SIZE;
 
-            let mut button = Button::new(x, y, CHESS_SIZE, CHESS_SIZE, chess.name_str());
+            let padding = 4;
+
+            let mut button = Button::new(
+                x + padding,
+                y + padding,
+                CHESS_SIZE - 2 * padding,
+                CHESS_SIZE - 2 * padding,
+                chess.name_str(),
+            );
             button.set_label_color(if chess.color { Color::Red } else { Color::Blue });
             button.set_label_size((CHESS_SIZE * 6 / 10) as i32);
+            button.set_frame(FrameType::RoundedBox);
             w.add(&button);
         }
     }
@@ -372,14 +374,14 @@ mod game {
                 Chess::from("象", false, (2, 9)),
                 Chess::from("士", false, (5, 9)),
                 Chess::from("士", false, (3, 9)),
-                Chess::from("将", false, (4, 9)),
+                Chess::from("帅", false, (4, 9)),
                 Chess::from("炮", false, (1, 7)),
                 Chess::from("炮", false, (7, 7)),
-                Chess::from("卒", false, (6, 6)),
-                Chess::from("卒", false, (4, 6)),
-                Chess::from("卒", false, (2, 6)),
-                Chess::from("卒", false, (0, 6)),
-                Chess::from("卒", false, (8, 6)),
+                Chess::from("兵", false, (6, 6)),
+                Chess::from("兵", false, (4, 6)),
+                Chess::from("兵", false, (2, 6)),
+                Chess::from("兵", false, (0, 6)),
+                Chess::from("兵", false, (8, 6)),
             ];
 
             return ChineseChess {
