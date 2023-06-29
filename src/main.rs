@@ -1,11 +1,11 @@
-use fltk::{app, button::Button, draw, enums::*, prelude::*, window::*};
+use fltk::{app, button::Button, draw, enums::*, group, prelude::*, window::*};
 const CHESS_SIZE: i32 = 60;
 fn main() {
     let app = app::App::default().with_scheme(app::Scheme::Gleam);
     let mut wind = Window::new(
         100,
         100,
-        CHESS_SIZE * 10 - CHESS_SIZE,
+        CHESS_SIZE * 10 - CHESS_SIZE + CHESS_SIZE * 2,
         CHESS_SIZE * 10,
         "中国象棋",
     );
@@ -29,8 +29,12 @@ fn main() {
             );
         }
     });
+
+    let mut f = group::Group::new(100, 100, CHESS_SIZE * 10 - CHESS_SIZE, CHESS_SIZE * 10, "");
+    wind.add(&f);
+
     let mut game: game::ChineseChess = Default::default();
-    fn redrawn(w: &mut DoubleWindow, game: &game::ChineseChess) {
+    fn redrawn(w: &mut Group, game: &game::ChineseChess) {
         for chess in game.chessmen.iter() {
             let x = (chess.position.x) * CHESS_SIZE;
             let y = (chess.position.y) * CHESS_SIZE;
@@ -50,7 +54,8 @@ fn main() {
             w.add(&button);
         }
     }
-    redrawn(&mut wind, &game);
+
+    redrawn(&mut f, &game);
     wind.handle(move |w, event| {
         if let Event::Push = event {
             let (x, y) = app::event_coords();
@@ -60,12 +65,24 @@ fn main() {
                 y: y / CHESS_SIZE,
             });
             w.redraw();
-            w.clear();
-            redrawn(w, &game);
+
+            f.clear();
+            redrawn(&mut f, &game);
             return true;
         }
         return false;
     });
+
+    let mut undo_button = Button::new(9 * CHESS_SIZE, 0, CHESS_SIZE * 2, CHESS_SIZE, "悔棋");
+    undo_button.set_label_size((CHESS_SIZE * 6 / 10) as i32);
+    undo_button.set_frame(FrameType::RoundedBox);
+    undo_button.set_selection_color(Color::DarkBlue);
+    undo_button.set_color(Color::White);
+    undo_button.set_callback(move |_b| {
+        println!("undo");
+    });
+    wind.add(&undo_button);
+
     wind.end();
     wind.show();
     app.run().unwrap();
@@ -140,11 +157,27 @@ mod game {
                 }
                 马 => {
                     // 马:日字走法,可以越过其他棋子
-                    (x1 - x2).abs() * (y1 - y2).abs() == 2
+                    if (x1 - x2).abs() * (y1 - y2).abs() != 2 {
+                        return false;
+                    }
+                    // 别马脚判定规则
+                    match (x2 - x1, y2 - y1) {
+                        (2, _) => !game.has_chess(&Position { x: x1 + 1, y: y1 }),
+                        (-2, _) => !game.has_chess(&Position { x: x1 - 1, y: y1 }),
+                        (_, 2) => !game.has_chess(&Position { x: x1, y: y1 + 1 }),
+                        (_, -2) => !game.has_chess(&Position { x: x1, y: y1 - 1 }),
+                        (_, _) => unreachable!(),
+                    }
                 }
                 象 => {
                     // 象:斜线移动,不能越过其他棋子
-                    (x1 - x2).abs() == 2 && (y1 - y2).abs() == 2
+                    (x1 - x2).abs() == 2
+                        && (y1 - y2).abs() == 2
+                        // 别象腿的情况是不能走的
+                        && !game.has_chess(&Position {
+                            x: (x1 + x2) / 2,
+                            y: (y1 + y2) / 2,
+                        })
                 }
                 士 => {
                     // 士:斜线移动,不能越过其他棋子
