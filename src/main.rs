@@ -1,4 +1,4 @@
-use fltk::{app, button::Button, draw, enums::*, group, prelude::*, window::*};
+use fltk::{app, button::Button, draw, enums::*, frame::Frame, group::*, prelude::*, window::*};
 const CHESS_SIZE: i32 = 60;
 fn main() {
     let app = app::App::default().with_scheme(app::Scheme::Gleam);
@@ -9,6 +9,9 @@ fn main() {
         CHESS_SIZE * 10,
         "中国象棋",
     );
+
+    let mut flex = Flex::default_fill();
+
     // 画棋盘格
     wind.draw(move |_w| {
         draw::set_draw_color(Color::from_rgb(255, 255, 255));
@@ -30,11 +33,11 @@ fn main() {
         }
     });
 
-    let mut f = group::Group::new(100, 100, CHESS_SIZE * 10 - CHESS_SIZE, CHESS_SIZE * 10, "");
-    wind.add(&f);
+    let mut group = Group::default_fill();
+    flex.fixed(&group, CHESS_SIZE * 10 - CHESS_SIZE);
 
     let mut game: game::ChineseChess = Default::default();
-    fn redrawn(w: &mut Group, game: &game::ChineseChess) {
+    fn redrawn(group: &mut Group, game: &game::ChineseChess) {
         for chess in game.chessmen.iter() {
             let x = (chess.position.x) * CHESS_SIZE;
             let y = (chess.position.y) * CHESS_SIZE;
@@ -51,11 +54,11 @@ fn main() {
             button.set_frame(FrameType::RoundedBox);
             button.set_selection_color(Color::DarkBlue);
             button.set_color(Color::White);
-            w.add(&button);
+            group.add(&button);
         }
     }
 
-    redrawn(&mut f, &game);
+    redrawn(&mut group, &game);
     wind.handle(move |w, event| {
         if let Event::Push = event {
             let (x, y) = app::event_coords();
@@ -66,23 +69,26 @@ fn main() {
             });
             w.redraw();
 
-            f.clear();
-            redrawn(&mut f, &game);
+            group.clear();
+            redrawn(&mut group, &game);
             return true;
         }
         return false;
     });
+    let mut hpack = Pack::default_fill();
+    hpack.set_type(PackType::Vertical);
+    hpack.set_spacing(5);
+    flex.add(&hpack);
 
-    let mut undo_button = Button::new(9 * CHESS_SIZE, 0, CHESS_SIZE * 2, CHESS_SIZE, "悔棋");
-    undo_button.set_label_size((CHESS_SIZE * 6 / 10) as i32);
-    undo_button.set_frame(FrameType::RoundedBox);
-    undo_button.set_selection_color(Color::DarkBlue);
-    undo_button.set_color(Color::White);
-    undo_button.set_callback(move |_b| {
-        println!("undo");
-    });
-    wind.add(&undo_button);
-
+    hpack.add(&Button::default().with_label("悔棋"));
+    hpack.add(&Button::default().with_label("功能"));
+    hpack.add(&Button::default().with_label("功能"));
+    hpack.add(&Button::default().with_label("功能"));
+    hpack.add(&Button::default().with_label("功能"));
+    hpack.end();
+    hpack.auto_layout();
+    flex.fixed(&Group::default().with_size(10, 10), 10);
+    flex.end();
     wind.end();
     wind.show();
     app.run().unwrap();
@@ -125,6 +131,11 @@ mod game {
 
             let Position { x: x1, y: y1 } = self.position;
             let Position { x: x2, y: y2 } = *pos;
+
+            if x2 > 8 || x2 < 0 || y2 < 0 || y2 > 9 {
+                // 走出了棋盘区域
+                return false;
+            }
 
             match self.chess_type {
                 车 => {
