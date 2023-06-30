@@ -1,98 +1,115 @@
-use fltk::{app, button::Button, draw, enums::*, frame::Frame, group::*, prelude::*, window::*};
-const CHESS_SIZE: i32 = 60;
-fn main() {
-    let app = app::App::default().with_scheme(app::Scheme::Gleam);
-    let mut wind = Window::new(
-        100,
-        100,
-        CHESS_SIZE * 10 - CHESS_SIZE + CHESS_SIZE * 2,
-        CHESS_SIZE * 10,
-        "中国象棋",
-    );
+mod ui {
+    use fltk::{app, button::Button, draw, enums::*, group::*, prelude::*, window::*};
 
-    let mut flex = Flex::default_fill();
+    use crate::game;
+    const CHESS_SIZE: i32 = 60;
+    pub fn ui(mut game: game::ChineseChess) {
+        let app = app::App::default().with_scheme(app::Scheme::Oxy);
+        let pand = 10;
+        let mut top_window = Window::new(
+            100,
+            100,
+            CHESS_SIZE * 10 - CHESS_SIZE + CHESS_SIZE * 2 + pand * 2,
+            CHESS_SIZE * 10 + pand * 2,
+            "中国象棋",
+        );
+        let mut chess_window = Window::new(
+            pand,
+            pand,
+            CHESS_SIZE * 10 - CHESS_SIZE + CHESS_SIZE * 2,
+            CHESS_SIZE * 10,
+            "中国象棋",
+        );
 
-    // 画棋盘格
-    wind.draw(move |_w| {
-        draw::set_draw_color(Color::from_rgb(255, 255, 255));
-        for i in 0..9 {
-            draw::draw_line(
-                CHESS_SIZE / 2 + i * CHESS_SIZE,
-                CHESS_SIZE / 2,
-                CHESS_SIZE / 2 + i * CHESS_SIZE,
-                10 * CHESS_SIZE - CHESS_SIZE / 2,
-            );
+        let mut flex = Flex::default_fill();
+
+        // 画棋盘格
+        chess_window.draw(move |_w| {
+            draw::set_draw_color(Color::from_rgb(255, 255, 255));
+            for i in 0..9 {
+                draw::draw_line(
+                    CHESS_SIZE / 2 + i * CHESS_SIZE,
+                    CHESS_SIZE / 2,
+                    CHESS_SIZE / 2 + i * CHESS_SIZE,
+                    10 * CHESS_SIZE - CHESS_SIZE / 2,
+                );
+            }
+            for i in 0..10 {
+                draw::draw_line(
+                    CHESS_SIZE / 2,
+                    CHESS_SIZE / 2 + i * CHESS_SIZE,
+                    9 * CHESS_SIZE - CHESS_SIZE / 2,
+                    CHESS_SIZE / 2 + i * CHESS_SIZE,
+                );
+            }
+        });
+
+        let mut group = Group::default_fill();
+        flex.fixed(&group, CHESS_SIZE * 10 - CHESS_SIZE);
+
+        fn redrawn(group: &mut Group, game: &game::ChineseChess) {
+            for chess in game.chessmen.iter() {
+                let x = (chess.position.x) * CHESS_SIZE;
+                let y = (chess.position.y) * CHESS_SIZE;
+                let padding = 4;
+                let mut button = Button::new(
+                    x + padding,
+                    y + padding,
+                    CHESS_SIZE - 2 * padding,
+                    CHESS_SIZE - 2 * padding,
+                    chess.name_str(),
+                );
+                button.set_label_color(if chess.color { Color::Red } else { Color::Blue });
+                button.set_label_size((CHESS_SIZE * 6 / 10) as i32);
+                button.set_frame(FrameType::RoundedBox);
+                button.set_selection_color(Color::DarkBlue);
+                button.set_color(Color::White);
+                group.add(&button);
+            }
         }
-        for i in 0..10 {
-            draw::draw_line(
-                CHESS_SIZE / 2,
-                CHESS_SIZE / 2 + i * CHESS_SIZE,
-                9 * CHESS_SIZE - CHESS_SIZE / 2,
-                CHESS_SIZE / 2 + i * CHESS_SIZE,
-            );
-        }
-    });
 
-    let mut group = Group::default_fill();
-    flex.fixed(&group, CHESS_SIZE * 10 - CHESS_SIZE);
+        redrawn(&mut group, &game);
+        chess_window.handle(move |w, event| {
+            if let Event::Push = event {
+                let (x, y) = app::event_coords();
+                dbg!("click {}, {}", x, y);
+                // 点击棋盘
+                game.click(&game::Position {
+                    x: x / CHESS_SIZE,
+                    y: y / CHESS_SIZE,
+                });
+                w.redraw();
 
-    let mut game: game::ChineseChess = Default::default();
-    fn redrawn(group: &mut Group, game: &game::ChineseChess) {
-        for chess in game.chessmen.iter() {
-            let x = (chess.position.x) * CHESS_SIZE;
-            let y = (chess.position.y) * CHESS_SIZE;
-            let padding = 4;
-            let mut button = Button::new(
-                x + padding,
-                y + padding,
-                CHESS_SIZE - 2 * padding,
-                CHESS_SIZE - 2 * padding,
-                chess.name_str(),
-            );
-            button.set_label_color(if chess.color { Color::Red } else { Color::Blue });
-            button.set_label_size((CHESS_SIZE * 6 / 10) as i32);
-            button.set_frame(FrameType::RoundedBox);
-            button.set_selection_color(Color::DarkBlue);
-            button.set_color(Color::White);
-            group.add(&button);
-        }
+                group.clear();
+                redrawn(&mut group, &game);
+                return true;
+            }
+            return false;
+        });
+        let mut hpack = Pack::default_fill();
+        flex.add(&hpack);
+        hpack.set_type(PackType::Vertical);
+        hpack.set_spacing(10);
+        Button::default().with_label("悔棋");
+        Button::default().with_label("功能");
+        Button::default().with_label("功能");
+        Button::default().with_label("功能");
+        Button::default().with_label("功能");
+        hpack.end();
+        hpack.auto_layout();
+        flex.fixed(&Group::default().with_size(10, 10), 10);
+        flex.end();
+        top_window.end();
+        top_window.show();
+        app.run().unwrap();
     }
-
-    redrawn(&mut group, &game);
-    wind.handle(move |w, event| {
-        if let Event::Push = event {
-            let (x, y) = app::event_coords();
-            // 点击棋盘
-            game.click(&game::Position {
-                x: x / CHESS_SIZE,
-                y: y / CHESS_SIZE,
-            });
-            w.redraw();
-
-            group.clear();
-            redrawn(&mut group, &game);
-            return true;
-        }
-        return false;
-    });
-    let mut hpack = Pack::default_fill();
-    hpack.set_type(PackType::Vertical);
-    hpack.set_spacing(5);
-    flex.add(&hpack);
-
-    hpack.add(&Button::default().with_label("悔棋"));
-    hpack.add(&Button::default().with_label("功能"));
-    hpack.add(&Button::default().with_label("功能"));
-    hpack.add(&Button::default().with_label("功能"));
-    hpack.add(&Button::default().with_label("功能"));
-    hpack.end();
-    hpack.auto_layout();
-    flex.fixed(&Group::default().with_size(10, 10), 10);
-    flex.end();
-    wind.end();
-    wind.show();
-    app.run().unwrap();
 }
+
+fn main() {
+    let game: game::ChineseChess = Default::default();
+    ui::ui(game);
+}
+
 mod game {
 
     use std::fmt;
