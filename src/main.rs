@@ -2,6 +2,7 @@ mod ui {
     use fltk::{app, button::Button, draw, enums::*, group::*, prelude::*, window::*};
 
     use crate::game;
+
     const CHESS_SIZE: i32 = 60;
     pub fn ui(mut game: game::ChineseChess) {
         let app = app::App::default().with_scheme(app::Scheme::Oxy);
@@ -13,13 +14,13 @@ mod ui {
             CHESS_SIZE * 10 + pand * 2,
             "中国象棋",
         );
-        let mut chess_window = Window::new(
-            pand,
-            pand,
-            CHESS_SIZE * 10 - CHESS_SIZE + CHESS_SIZE * 2,
-            CHESS_SIZE * 10,
-            "中国象棋",
-        );
+
+        let mut chess_window = Window::default()
+            .with_pos(pand, pand)
+            .with_size(
+                CHESS_SIZE * 10 - CHESS_SIZE + CHESS_SIZE * 2,
+                CHESS_SIZE * 10,
+            );
 
         let mut flex = Flex::default_fill();
 
@@ -59,8 +60,12 @@ mod ui {
                     CHESS_SIZE - 2 * padding,
                     chess.name_str(),
                 );
-                button.set_label_color(if chess.color { Color::Red } else { Color::Blue });
-                button.set_label_size((CHESS_SIZE * 6 / 10) as i32);
+                button.set_label_color(if chess.color.is_red() {
+                    Color::Red
+                } else {
+                    Color::Blue
+                });
+                button.set_label_size(CHESS_SIZE * 6 / 10);
                 button.set_frame(FrameType::RoundedBox);
                 button.set_selection_color(Color::DarkBlue);
                 button.set_color(Color::White);
@@ -72,7 +77,7 @@ mod ui {
         chess_window.handle(move |w, event| {
             if let Event::Push = event {
                 let (x, y) = app::event_coords();
-                dbg!("click {}, {}", x, y);
+                dbg!(x, y);
                 // 点击棋盘
                 game.click(&game::Position {
                     x: x / CHESS_SIZE,
@@ -111,7 +116,7 @@ fn main() {
 }
 
 mod game {
-
+    use crate::game::Turn::{Black, Red};
     use std::fmt;
     use ChessType::*;
 
@@ -134,9 +139,22 @@ mod game {
     #[derive(Debug)]
     pub struct Chess {
         chess_type: ChessType,
-        pub color: bool,
+        pub color: Turn,
         pub position: Position,
     }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Turn {
+        Red,
+        Black,
+    }
+
+    impl Turn {
+        pub fn is_red(&self) -> bool {
+            self == &Red
+        }
+    }
+
     impl Chess {
         fn can_move_to(&self, pos: &Position, game: &ChineseChess) -> bool {
             if let Some(chess) = game.get_chess(pos) {
@@ -257,9 +275,11 @@ mod game {
                 }
                 兵 => {
                     // 兵:直线移动,不能越过其他棋子
-                    if self.color && y1 < 5 || !self.color && y1 > 4 {
+                    if self.color.is_red() && y1 < 5 || (!self.color.is_red() && y1 > 4) {
                         // 没过河,只能向前
-                        x1 == x2 && (self.color && y2 == y1 + 1 || !self.color && y2 == y1 - 1)
+                        x1 == x2
+                            && ((self.color.is_red() && y2 == y1 + 1)
+                                || (!self.color.is_red() && y2 == y1 - 1))
                     } else {
                         // 过了河,可以左右
                         (x1 == x2 && (y2 == y1 + 1 || y2 == y1 - 1))
@@ -269,7 +289,7 @@ mod game {
             }
         }
         fn in_nine_palace(&self, x: i32, y: i32) -> bool {
-            if self.color {
+            if self.color.is_red() {
                 // 红方,九宫格在底部两个区域
                 (3..=5).contains(&x) && (0..=2).contains(&y)
             } else {
@@ -295,7 +315,7 @@ mod game {
             let (chess_type, color, posi) = value;
             Chess {
                 chess_type,
-                color,
+                color: if color { Turn::Red } else { Turn::Black },
                 position: Position {
                     x: posi.0,
                     y: posi.1,
@@ -305,17 +325,22 @@ mod game {
     }
 
     pub struct ChineseChess {
-        pub chessmen: Vec<Chess>,                 // 棋盘上的棋子
-        selected: Option<usize>,                  // 当前选中的棋子序号
-        turn: bool,                               // 当前走棋方
-        history: Vec<(bool, Position, Position)>, // 历史记录 方便撤回
+        pub chessmen: Vec<Chess>, // 棋盘上的棋子
+        selected: Option<usize>,  // 当前选中的棋子序号
+        turn: Turn,
+        // 当前走棋方
+        history: Vec<(Turn, Position, Position)>, // 历史记录 方便撤回
     }
     impl ChineseChess {
         fn has_chess(&self, pos: &Position) -> bool {
-            self.chessmen.iter().any(|c| c.position == *pos)
+            self.chessmen
+                .iter()
+                .any(|c| c.position == *pos)
         }
         fn get_chess(&self, pos: &Position) -> Option<&Chess> {
-            self.chessmen.iter().find(|c| c.position == *pos)
+            self.chessmen
+                .iter()
+                .find(|c| c.position == *pos)
         }
         pub fn click(&mut self, pos: &Position) {
             let selected = self.select(pos);
@@ -324,7 +349,11 @@ mod game {
             }
         }
         fn select(&mut self, pos: &Position) -> bool {
-            for (i, chess) in self.chessmen.iter().enumerate() {
+            for (i, chess) in self
+                .chessmen
+                .iter()
+                .enumerate()
+            {
                 if chess.position == *pos && chess.color == self.turn {
                     self.selected = Some(i);
                     return true;
@@ -335,7 +364,11 @@ mod game {
         fn move_to(&mut self, pos: &Position) {
             // eat chess
             let mut eat_chess = None;
-            for (i, chess) in self.chessmen.iter().enumerate() {
+            for (i, chess) in self
+                .chessmen
+                .iter()
+                .enumerate()
+            {
                 if chess.position == *pos && chess.color != self.turn {
                     eat_chess = Some(i);
                 }
@@ -344,14 +377,23 @@ mod game {
             if let Some(selected) = self.selected {
                 let chess = &self.chessmen[selected];
                 if chess.can_move_to(&pos, &self) {
-                    self.history
-                        .push((self.turn, chess.position.clone(), pos.clone()));
+                    self.history.push((
+                        self.turn.clone(),
+                        chess
+                            .position
+                            .clone(),
+                        pos.clone(),
+                    ));
                     let chess = &mut self.chessmen[selected];
                     chess.position = pos.clone();
-                    self.turn = !self.turn; // 改变走棋方
+                    self.turn = match self.turn {
+                        Red => Black,
+                        Black => Red,
+                    }; // 改变走棋方
                     self.selected = None;
                     if let Some(idx) = eat_chess {
-                        self.chessmen.remove(idx);
+                        self.chessmen
+                            .remove(idx);
                     }
                     return;
                 }
@@ -365,48 +407,25 @@ mod game {
     }
     impl Default for ChineseChess {
         fn default() -> ChineseChess {
+            #[rustfmt::skip]
             let chessmen: Vec<Chess> = vec![
                 // 红方棋子
-                (车, true, (0, 0)),
-                (车, true, (8, 0)),
-                (马, true, (7, 0)),
-                (马, true, (1, 0)),
-                (象, true, (6, 0)),
-                (象, true, (2, 0)),
-                (士, true, (5, 0)),
-                (士, true, (3, 0)),
-                (帅, true, (4, 0)),
-                (炮, true, (1, 2)),
-                (炮, true, (7, 2)),
-                (兵, true, (6, 3)),
-                (兵, true, (4, 3)),
-                (兵, true, (2, 3)),
-                (兵, true, (0, 3)),
-                (兵, true, (8, 3)),
+                (车, false, (0, 0)), (车, false, (8, 0)), (马, false, (7, 0)), (马, false, (1, 0)),
+                (象, false, (6, 0)), (象, false, (2, 0)), (士, false, (5, 0)), (士, false, (3, 0)),
+                (帅, false, (4, 0)), (炮, false, (1, 2)), (炮, false, (7, 2)), (兵, false, (6, 3)),
+                (兵, false, (4, 3)), (兵, false, (2, 3)), (兵, false, (0, 3)), (兵, false, (8, 3)),
                 // 黑方棋子
-                (车, false, (0, 9)),
-                (车, false, (8, 9)),
-                (马, false, (7, 9)),
-                (马, false, (1, 9)),
-                (象, false, (6, 9)),
-                (象, false, (2, 9)),
-                (士, false, (5, 9)),
-                (士, false, (3, 9)),
-                (帅, false, (4, 9)),
-                (炮, false, (1, 7)),
-                (炮, false, (7, 7)),
-                (兵, false, (6, 6)),
-                (兵, false, (4, 6)),
-                (兵, false, (2, 6)),
-                (兵, false, (0, 6)),
-                (兵, false, (8, 6)),
+                (车, true, (0, 9)), (车, true, (8, 9)), (马, true, (7, 9)), (马, true, (1, 9)),
+                (象, true, (6, 9)), (象, true, (2, 9)), (士, true, (5, 9)), (士, true, (3, 9)),
+                (帅, true, (4, 9)), (炮, true, (1, 7)), (炮, true, (7, 7)), (兵, true, (6, 6)),
+                (兵, true, (4, 6)), (兵, true, (2, 6)), (兵, true, (0, 6)), (兵, true, (8, 6)),
             ]
             .into_iter()
             .map(Into::into)
             .collect();
             return ChineseChess {
                 chessmen,
-                turn: true,
+                turn: Turn::Red,
                 history: vec![],
                 selected: None,
             };
