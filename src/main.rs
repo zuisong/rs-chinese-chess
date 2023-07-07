@@ -70,16 +70,14 @@ mod ui {
         redrawn(&mut group, &game);
         chess_window.handle(move |w, event| {
             if let Event::Push = event {
-                let (x, y) = app::event_coords();
+                let (click_x, click_y) = app::event_coords();
+                let (x, y) = (click_x / CHESS_SIZE, click_y / CHESS_SIZE);
                 dbg!(x, y);
                 // 点击棋盘
-                game.click(&game::Position {
-                    x: x / CHESS_SIZE,
-                    y: y / CHESS_SIZE,
-                });
+                game.click(&game::Position { x, y });
+                group.clear();
                 w.redraw();
 
-                group.clear();
                 redrawn(&mut group, &game);
                 return true;
             }
@@ -223,7 +221,7 @@ mod game {
                 }
                 士 => {
                     // 士:斜线移动,不能越过其他棋子
-                    (x1 - x2).abs() == 1 && (y1 - y2).abs() == 1 && self.in_nine_palace(x2, y2)
+                    (x1 - x2).abs() * (y1 - y2).abs() == 1 && self.in_nine_palace(x2, y2)
                 }
                 帅 => {
                     // 帅:一步一格,不能越过其他棋子
@@ -271,11 +269,11 @@ mod game {
                 }
                 兵 => {
                     // 兵:直线移动,不能越过其他棋子
-                    if self.color.is_red() && y1 < 5 || (!self.color.is_red() && y1 > 4) {
+                    if !self.color.is_red() && y1 < 5 || (self.color.is_red() && y1 > 4) {
                         // 没过河,只能向前
                         x1 == x2
-                            && ((self.color.is_red() && y2 == y1 + 1)
-                                || (!self.color.is_red() && y2 == y1 - 1))
+                            && ((!self.color.is_red() && y2 == y1 + 1)
+                                || (self.color.is_red() && y2 == y1 - 1))
                     } else {
                         // 过了河,可以左右
                         (x1 == x2 && (y2 == y1 + 1 || y2 == y1 - 1))
@@ -285,13 +283,13 @@ mod game {
             }
         }
         fn in_nine_palace(&self, x: i32, y: i32) -> bool {
-            if self.color.is_red() {
-                // 红方,九宫格在底部两个区域
-                (3..=5).contains(&x) && (0..=2).contains(&y)
-            } else {
+            (
                 // 蓝方,九宫格在顶部两个区域
+                (3..=5).contains(&x) && (0..=2).contains(&y)
+            ) || (
+                // 九宫格在底部两个区域
                 (3..=5).contains(&x) && (7..=9).contains(&y)
-            }
+            )
         }
         pub fn name_str(&self) -> &'static str {
             match self.chess_type {
@@ -308,14 +306,11 @@ mod game {
 
     impl From<(ChessType, bool, (i32, i32))> for Chess {
         fn from(value: (ChessType, bool, (i32, i32))) -> Chess {
-            let (chess_type, color, posi) = value;
+            let (chess_type, color, (x, y)) = value;
             Chess {
                 chess_type,
                 color: if color { Turn::Red } else { Turn::Black },
-                position: Position {
-                    x: posi.0,
-                    y: posi.1,
-                },
+                position: Position { x, y },
             }
         }
     }
