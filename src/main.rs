@@ -1,57 +1,54 @@
+use anyhow::Ok;
+
 mod ui {
-    use fltk::{app, button::Button, draw, enums::*, group::*, prelude::*, window::*};
-
     use crate::game;
+    use anyhow::Ok;
+    use fltk::{
+        app,
+        button::Button,
+        enums::*,
+        frame::Frame,
+        group::*,
+        image::{JpegImage, SharedImage},
+        prelude::*,
+        window::*,
+    };
 
-    const CHESS_SIZE: i32 = 60;
-    pub fn ui(mut game: game::ChineseChess) {
+    const CHESS_SIZE: i32 = 57;
+    const CHESS_BOARD_WIDTH: i32 = 521;
+    const CHESS_BOARD_HEIGHT: i32 = 577;
+    pub fn ui(mut game: game::ChineseChess) -> anyhow::Result<()> {
         let app = app::App::default().with_scheme(app::Scheme::Oxy);
-        let pand = 10;
+        let pand = 1;
         let mut top_window = Window::new(
             100,
             100,
-            CHESS_SIZE * 10 - CHESS_SIZE + CHESS_SIZE * 2 + pand * 2,
-            CHESS_SIZE * 10 + pand * 2,
+            CHESS_BOARD_WIDTH + 120,
+            CHESS_BOARD_HEIGHT + pand * 2,
             "中国象棋",
         );
 
         let mut chess_window = Window::default()
             .with_pos(pand, pand)
-            .with_size(
-                CHESS_SIZE * 10 - CHESS_SIZE + CHESS_SIZE * 2,
-                CHESS_SIZE * 10,
-            );
+            .with_size(CHESS_BOARD_WIDTH + 120, CHESS_BOARD_HEIGHT);
+
+        {
+            // 画棋盘
+            let data = include_bytes!("../resources/board.jpg");
+            let mut background = SharedImage::from_image(JpegImage::from_data(data)?)?;
+            Frame::new(0, 0, CHESS_BOARD_WIDTH, CHESS_BOARD_HEIGHT, "")
+                .draw(move |f| background.draw(f.x(), f.y(), f.width(), f.height()));
+        }
 
         let mut flex = Flex::default_fill();
 
-        // 画棋盘格
-        chess_window.draw(move |_w| {
-            draw::set_draw_color(Color::from_rgb(255, 255, 255));
-            for i in 0..9 {
-                draw::draw_line(
-                    CHESS_SIZE / 2 + i * CHESS_SIZE,
-                    CHESS_SIZE / 2,
-                    CHESS_SIZE / 2 + i * CHESS_SIZE,
-                    10 * CHESS_SIZE - CHESS_SIZE / 2,
-                );
-            }
-            for i in 0..10 {
-                draw::draw_line(
-                    CHESS_SIZE / 2,
-                    CHESS_SIZE / 2 + i * CHESS_SIZE,
-                    9 * CHESS_SIZE - CHESS_SIZE / 2,
-                    CHESS_SIZE / 2 + i * CHESS_SIZE,
-                );
-            }
-        });
-
         let mut group = Group::default_fill();
-        flex.fixed(&group, CHESS_SIZE * 10 - CHESS_SIZE);
+        flex.fixed(&group, CHESS_BOARD_WIDTH);
 
         fn redrawn(group: &mut Group, game: &game::ChineseChess) {
             for chess in game.chessmen.iter() {
-                let x = (chess.position.x) * CHESS_SIZE;
-                let y = (chess.position.y) * CHESS_SIZE;
+                let x = (chess.position.x + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
+                let y = (chess.position.y + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
                 let padding = 4;
                 let mut button = Button::new(
                     x + padding,
@@ -107,12 +104,14 @@ mod ui {
         top_window.end();
         top_window.show();
         app.run().unwrap();
+        Ok(())
     }
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     let game: game::ChineseChess = Default::default();
-    ui::ui(game);
+    ui::ui(game)?;
+    Ok(())
 }
 
 mod game {

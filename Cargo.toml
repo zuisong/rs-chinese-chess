@@ -4,6 +4,7 @@ name = "rs-chinese-chess"
 version = "0.1.0"
 
 [dependencies]
+anyhow = "1.0.71"
 fltk = { version = "1.4.6", features = ["fltk-bundled"] }
 
 [profile.release]
