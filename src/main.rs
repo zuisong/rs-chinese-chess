@@ -1,8 +1,5 @@
-use anyhow::Ok;
-
 mod ui {
     use crate::game;
-    use anyhow::Ok;
     use fltk::{
         app,
         button::Button,

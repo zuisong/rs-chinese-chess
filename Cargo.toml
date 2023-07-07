@@ -5,7 +5,7 @@ version = "0.1.0"
 
 [dependencies]
 anyhow = "1.0.71"
-fltk = { version = "1.4.6", features = ["fltk-bundled"] }
+fltk = { version = "1.4.7", features = ["fltk-bundled"] }
 
 [profile.release]
 opt-level = "z"
