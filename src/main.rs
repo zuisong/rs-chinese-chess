@@ -1,5 +1,5 @@
 mod ui {
-    use crate::game;
+    use crate::game::{self, Turn};
     use fltk::{
         app,
         button::Button,
@@ -54,7 +54,7 @@ mod ui {
                     CHESS_SIZE - 2 * padding,
                     chess.name_str(),
                 );
-                button.set_label_color(if chess.turn.is_red() {
+                button.set_label_color(if chess.turn == Turn::Red {
                     Color::Red
                 } else {
                     Color::Blue
@@ -143,12 +143,6 @@ mod game {
         Black,
     }
 
-    impl Turn {
-        pub fn is_red(&self) -> bool {
-            self == &Red
-        }
-    }
-
     impl Chess {
         fn can_move_to(&self, pos: &Position, game: &ChineseChess) -> bool {
             if let Some(chess) = game.get_chess(pos) {
@@ -169,31 +163,33 @@ mod game {
             match self.chess_type {
                 车 => {
                     // 车:直线移动,不能越过其他棋子
-                    if x1 == x2 || y1 == y2 {
-                        // 同一行或同一列
-                        let mut x = self.position.x;
-                        let mut y = self.position.y;
-                        loop {
-                            if x < x2 {
-                                x += 1;
-                            } else if x > x2 {
-                                x -= 1;
-                            }
-                            if y < y2 {
-                                y += 1;
-                            } else if y > y2 {
-                                y -= 1;
-                            }
-                            if x == x2 && y == y2 {
-                                return true;
-                            }
-                            // 检查路径上是否有其他棋子
-                            if game.has_chess(&Position { x, y }) {
-                                return false;
-                            }
+
+                    // 同一行或同一列
+                    if x1 != x2 && y1 != y2 {
+                        return false;
+                    }
+
+                    let mut x = x1;
+                    let mut y = y1;
+                    loop {
+                        if x < x2 {
+                            x += 1;
+                        } else if x > x2 {
+                            x -= 1;
+                        }
+                        if y < y2 {
+                            y += 1;
+                        } else if y > y2 {
+                            y -= 1;
+                        }
+                        if x == x2 && y == y2 {
+                            return true;
+                        }
+                        // 检查路径上是否有其他棋子
+                        if game.has_chess(&Position { x, y }) {
+                            return false;
                         }
                     }
-                    false
                 }
                 马 => {
                     // 马:日字走法,可以越过其他棋子
@@ -220,65 +216,70 @@ mod game {
                         })
                 }
                 士 => {
-                    // 士:斜线移动,不能越过其他棋子
+                    // 士:斜线移动
                     (x1 - x2).abs() * (y1 - y2).abs() == 1 && self.in_nine_palace(x2, y2)
                 }
                 帅 => {
-                    // 帅:一步一格,不能越过其他棋子
+                    // 帅:一步一格
                     (x1 - x2).abs() + (y1 - y2).abs() == 1 && self.in_nine_palace(x2, y2)
                 }
                 炮 => {
                     // 炮:直线移动,可以越过其他棋子,但必须是吃子
-                    if x1 == x2 || y1 == y2 {
-                        // 同一行或同一列
-                        let mut x = self.position.x;
-                        let mut y = self.position.y;
-                        let mut skipped = false;
-                        loop {
-                            if x < x2 {
-                                x += 1;
-                            } else if x > x2 {
-                                x -= 1;
+
+                    // 同一行或同一列
+                    if x1 != x2 && y1 != y2 {
+                        return false;
+                    }
+
+                    let mut x = self.position.x;
+                    let mut y = self.position.y;
+                    let mut skipped = false;
+                    loop {
+                        if x < x2 {
+                            x += 1;
+                        } else if x > x2 {
+                            x -= 1;
+                        }
+                        if y < y2 {
+                            y += 1;
+                        } else if y > y2 {
+                            y -= 1;
+                        }
+                        if x == x2 && y == y2 {
+                            if skipped {
+                                // 跳过棋子了 只能吃
+                                return game.has_chess(pos);
+                            } else {
+                                // 没有跳过棋子 不能吃
+                                return !game.has_chess(pos);
                             }
-                            if y < y2 {
-                                y += 1;
-                            } else if y > y2 {
-                                y -= 1;
-                            }
-                            if x == x2 && y == y2 {
-                                if skipped {
-                                    // 跳过棋子了 只能吃
-                                    return game.has_chess(pos);
-                                } else {
-                                    // 没有跳过棋子 不能吃
-                                    return !game.has_chess(pos);
-                                }
-                            }
-                            // 检查路径上是否有其他棋子
-                            if game.has_chess(&Position { x, y }) {
-                                if skipped {
-                                    // 离目标有多个棋子 不可以走
-                                    return false;
-                                } else {
-                                    skipped = true;
-                                }
+                        }
+                        // 检查路径上是否有其他棋子
+                        if game.has_chess(&Position { x, y }) {
+                            if skipped {
+                                // 离目标有多个棋子 不可以走
+                                return false;
+                            } else {
+                                skipped = true;
                             }
                         }
                     }
-                    false
                 }
                 兵 => {
+                    // 己方将的的y坐标
+                    let king_y = game
+                        .chessmen
+                        .iter()
+                        .find(|it| it.chess_type == ChessType::帅 && it.turn == self.turn)
+                        .map(|it| it.position.y)
+                        .unwrap();
+                    let over_river = if king_y <= 4 { y1 >= 5 } else { y1 <= 4 };
+
                     // 兵:直线移动,不能越过其他棋子
-                    if !self.turn.is_red() && y1 < 5 || (self.turn.is_red() && y1 > 4) {
-                        // 没过河,只能向前
-                        x1 == x2
-                            && ((!self.turn.is_red() && y2 == y1 + 1)
-                                || (self.turn.is_red() && y2 == y1 - 1))
-                    } else {
-                        // 过了河,可以左右
-                        (x1 == x2 && (y2 == y1 + 1 || y2 == y1 - 1))
-                            || (x2 == x1 + 1 || x2 == x1 - 1)
-                    }
+                    // 前进
+                    (x1 == x2 && ((king_y <= 4 && y2 == y1 + 1) || (king_y >= 5 && y2 == y1 - 1)))
+                            //过了河,可以左右
+                            || (over_river && y1 == y2 &&  (x2 == x1 + 1 || x2 == x1 - 1))
                 }
             }
         }
@@ -332,6 +333,7 @@ mod game {
                 .iter()
                 .find(|c| c.position == *pos)
         }
+
         pub fn click(&mut self, pos: &Position) {
             let selected = self.select(pos);
             if !selected {
