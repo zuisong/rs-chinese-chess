@@ -1,0 +1,14 @@
+[package]
+name = "engine"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "engine"
+[[bin]]
+name = "engine"
+path = "src/bin/main.rs"
+
+[dependencies]
+regex = "1.9.5"
+getrandom = "0.2.10"

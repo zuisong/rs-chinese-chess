@@ -206,14 +206,10 @@ pub struct ChineseChess {
 }
 impl ChineseChess {
     fn has_chess(&self, pos: &Position) -> bool {
-        self.chessmen
-            .iter()
-            .any(|c| c.position == *pos)
+        self.chessmen.iter().any(|c| c.position == *pos)
     }
     fn get_chess(&self, pos: &Position) -> Option<&Chess> {
-        self.chessmen
-            .iter()
-            .find(|c| c.position == *pos)
+        self.chessmen.iter().find(|c| c.position == *pos)
     }
     pub fn click(&mut self, pos: &Position) {
         let selected = self.select(pos);
@@ -222,11 +218,7 @@ impl ChineseChess {
         }
     }
     fn select(&mut self, pos: &Position) -> bool {
-        for (i, chess) in self
-            .chessmen
-            .iter()
-            .enumerate()
-        {
+        for (i, chess) in self.chessmen.iter().enumerate() {
             if chess.position == *pos && chess.turn == self.cur_turn {
                 self.selected = Some(i);
                 return true;
@@ -237,11 +229,7 @@ impl ChineseChess {
     fn move_to(&mut self, pos: &Position) {
         // eat chess
         let mut eat_chess = None;
-        for (i, chess) in self
-            .chessmen
-            .iter()
-            .enumerate()
-        {
+        for (i, chess) in self.chessmen.iter().enumerate() {
             if chess.position == *pos && chess.turn != self.cur_turn {
                 eat_chess = Some(i);
             }
@@ -260,8 +248,7 @@ impl ChineseChess {
                 }; // 改变走棋方
                 self.selected = None;
                 if let Some(idx) = eat_chess {
-                    self.chessmen
-                        .remove(idx);
+                    self.chessmen.remove(idx);
                 }
                 return;
             }
