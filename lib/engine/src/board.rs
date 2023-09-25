@@ -76,6 +76,7 @@ impl ChessType {
             ChessType::Pawn => 2,
         }
     }
+
     pub fn move_value(&self) -> i32 {
         match self {
             ChessType::King => 1,
@@ -85,6 +86,18 @@ impl ChessType {
             ChessType::Rook => 6,
             ChessType::Cannon => 4,
             ChessType::Pawn => 3,
+        }
+    }
+
+    pub fn name_value(&self) -> &'static str {
+        match self {
+            ChessType::King => "帅",
+            ChessType::Advisor => "士",
+            ChessType::Bishop => "相",
+            ChessType::Knight => "马",
+            ChessType::Rook => "车",
+            ChessType::Cannon => "炮",
+            ChessType::Pawn => "兵",
         }
     }
 }

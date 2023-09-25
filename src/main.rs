@@ -1,9 +1,10 @@
-mod game;
+use engine::board;
+
 mod ui;
+
 fn main() -> anyhow::Result<()> {
     engine::aaa();
-    let game: game::ChineseChess = Default::default();
+    let game: board::Board = board::Board::init();
     ui::ui(game)?;
-
     Ok(())
 }
