@@ -10,5 +10,5 @@ name = "engine"
 path = "src/bin/main.rs"
 
 [dependencies]
-regex = "1.9.5"
+regex = "1.10.2"
 getrandom = "0.2.10"

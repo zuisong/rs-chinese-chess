@@ -1,4 +1,4 @@
-use engine::board::{Board, Player, BOARD_HEIGHT, BOARD_WIDTH, Move, Position};
+use engine::board::{Board, ChessType, Move, Player, Position, BOARD_HEIGHT, BOARD_WIDTH};
 use fltk::{
     app,
     button::Button,
@@ -54,10 +54,7 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
                 let x = (x + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
                 let y = (y + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
                 let padding = 4;
-                let title = chess
-                    .chess_type()
-                    .unwrap()
-                    .name_value();
+                let title = chess.chess_type().unwrap().name_value();
                 let mut button = Button::new(
                     (x + padding) as i32,
                     (y + padding) as i32,
@@ -79,8 +76,6 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
         }
     }
 
-    let mut prev_clicked = (1, 1);
-
     redrawn(&mut group, &game);
     chess_window.handle(move |w, event| {
         if let Event::Push = event {
@@ -91,6 +86,8 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
             game.click((x, y));
             group.clear();
             w.redraw();
+
+            game.robot_move();
 
             redrawn(&mut group, &game);
             return true;
@@ -117,35 +114,56 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
 }
 
 trait BoardExt {
-    fn click(&mut self, pos: &(i32, i32));
-    fn select(&mut self, pos: &(i32, i32)) -> bool;
-    fn move_to(&mut self,
-               from: Position, // 起手位置
-               to: Position,   // 落子位置
+    fn click(&mut self, pos: (i32, i32));
+    fn select(&mut self, pos: (i32, i32)) -> bool;
+    fn move_to(
+        &mut self,
+        from: Position, // 起手位置
+        to: Position,   // 落子位置
     );
-}
 
+    fn robot_move(&mut self);
+}
 
 impl BoardExt for Board {
     fn click(&mut self, pos: (i32, i32)) {
         let selected = self.select(pos.clone());
         if !selected {
-            self.move_to(pos);
+            if self.chess_at(self.select_pos).player() == Some(self.turn) {
+                self.move_to(self.select_pos, pos.into());
+            }
         }
     }
-
-    fn select(&mut self, (x, y): (i32, i32)) -> bool {
-        let chess = self.chesses[y as usize][x as usize];
-
-        if chess.chess_type().is_none() {
-            return false
+    fn robot_move(&mut self) {
+        if self.turn == Player::Red {
+            return;
         }
-        return true
+
+        let (value, best_move) = self.iterative_deepening(3);
+        if let Some(m) = best_move {
+            if m.is_valid() {
+                self.do_move(&m);
+                return;
+            }
+        }
+        unreachable!()
     }
 
-    fn move_to(&mut self,
-               from: Position, // 起手位置
-               to: Position,   // 落子位置
+    fn select(&mut self, pos: (i32, i32)) -> bool {
+        let chess = self.chess_at(pos.into());
+
+        if chess.player() == Some(self.turn) {
+            self.select_pos = pos.into();
+            return true;
+        }
+
+        return false;
+    }
+
+    fn move_to(
+        &mut self,
+        from: Position, // 起手位置
+        to: Position,   // 落子位置
     ) {
         self.do_move(&Move {
             player: self.turn,
@@ -153,7 +171,6 @@ impl BoardExt for Board {
             to: to.into(),
             chess: self.chess_at(from.into()),
             capture: self.chess_at(to.into()),
-        })
+        });
     }
 }
-

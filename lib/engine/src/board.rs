@@ -131,6 +131,15 @@ pub struct Position {
     pub col: i32,
 }
 
+impl From<(i32, i32)> for Position {
+    fn from(value: (i32, i32)) -> Self {
+        Position {
+            row: value.1,
+            col: value.0,
+        }
+    }
+}
+
 impl Position {
     pub fn new(row: i32, col: i32) -> Self {
         Position { row, col }
@@ -224,6 +233,7 @@ pub struct Board {
     pub zobrist_value: u64,
     pub zobrist_value_lock: u64,
     pub distance: i32,
+    pub select_pos: Position,
 }
 
 // 棋子是否在棋盘内
@@ -464,6 +474,7 @@ impl Board {
             zobrist_value: 0,
             zobrist_value_lock: 0,
             distance: 0,
+            select_pos: Position { row: 1, col: 1 },
         };
         board.zobrist_value = ZOBRIST_TABLE.calc_chesses(&board.chesses);
         board.zobrist_value_lock = ZOBRIST_TABLE_LOCK.calc_chesses(&board.chesses);
@@ -481,6 +492,7 @@ impl Board {
             zobrist_value: 0,
             zobrist_value_lock: 0,
             distance: 0,
+            select_pos: Position { row: 1, col: 1 },
         }
     }
     pub fn from_fen(fen: &str) -> Self {

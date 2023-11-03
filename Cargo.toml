@@ -6,8 +6,8 @@ version = "0.1.0"
 [dependencies]
 anyhow = "1.0.75"
 bytes = "1.5.0"
-fltk = {version = "1.4.12", features = ["fltk-bundled"]}
-tracing = {version = "0.1.37", features = ["log"]}
+fltk = {version = "1.4.16", features = ["fltk-bundled"]}
+tracing = {version = "0.1.40", features = ["log"]}
 tracing-subscriber = {version = "0.3.17", features = ["env-filter"]}
 engine = { path = "./lib/engine" }
 
