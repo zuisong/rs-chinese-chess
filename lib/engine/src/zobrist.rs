@@ -64,6 +64,7 @@ impl Zobristable {
     }
 }
 
+#[cfg(test)]
 mod test {
     use crate::board::*;
     use crate::zobrist::*;

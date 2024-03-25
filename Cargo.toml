@@ -4,11 +4,11 @@ name = "ui"
 version = "0.1.0"
 
 [dependencies]
-anyhow = "1.0.75"
-bytes = "1.5.0"
-fltk = {version = "1.4.16", features = ["fltk-bundled"]}
+anyhow = "1.0.81"
+bytes = "1.6.0"
+fltk = {version = "1.4.26", features = ["fltk-bundled"]}
 tracing = {version = "0.1.40", features = ["log"]}
-tracing-subscriber = {version = "0.3.17", features = ["env-filter"]}
+tracing-subscriber = {version = "0.3.18", features = ["env-filter"]}
 engine = { path = "./lib/engine" }
 
 

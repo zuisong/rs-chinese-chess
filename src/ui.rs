@@ -1,4 +1,4 @@
-use engine::board::{Board, ChessType, Move, Player, Position, BOARD_HEIGHT, BOARD_WIDTH};
+use engine::board::{Board, Move, Player, Position, BOARD_HEIGHT, BOARD_WIDTH};
 use fltk::{
     app,
     button::Button,
@@ -15,7 +15,7 @@ const CHESS_BOARD_WIDTH: i32 = 521;
 const CHESS_BOARD_HEIGHT: i32 = 577;
 
 pub fn ui(mut game: Board) -> anyhow::Result<()> {
-    let app = app::App::default().with_scheme(app::Scheme::Oxy);
+    let app = app::App::default();
     let pand = 1;
     let mut top_window = Window::new(
         100,
@@ -94,17 +94,16 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
         }
         return false;
     });
-    let mut hpack = Pack::default_fill();
-    flex.add(&hpack);
-    hpack.set_type(PackType::Vertical);
-    hpack.set_spacing(10);
+    let mut vpack = Pack::default_fill().with_type(PackType::Vertical);
+    vpack.set_spacing(10);
+    flex.add(&vpack);
     Button::default().with_label("悔棋");
     Button::default().with_label("功能");
     Button::default().with_label("功能");
     Button::default().with_label("功能");
     Button::default().with_label("功能");
-    hpack.end();
-    hpack.auto_layout();
+    vpack.end();
+    vpack.auto_layout();
     flex.fixed(&Group::default().with_size(10, 10), 10);
     flex.end();
     top_window.end();
@@ -122,7 +121,7 @@ trait BoardExt {
         to: Position,   // 落子位置
     );
 
-    fn robot_move(&mut self);
+    fn robot_move(&mut self) -> bool;
 }
 
 impl BoardExt for Board {
@@ -134,19 +133,19 @@ impl BoardExt for Board {
             }
         }
     }
-    fn robot_move(&mut self) {
+    fn robot_move(&mut self) -> bool {
         if self.turn == Player::Red {
-            return;
+            return false;
         }
 
-        let (value, best_move) = self.iterative_deepening(3);
+        let (_value, best_move) = self.iterative_deepening(3);
         if let Some(m) = best_move {
             if m.is_valid() {
                 self.do_move(&m);
-                return;
+                return true;
             }
         }
-        unreachable!()
+        unreachable!();
     }
 
     fn select(&mut self, pos: (i32, i32)) -> bool {
