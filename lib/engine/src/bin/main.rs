@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-#![feature(lazy_cell)]
 extern crate engine;
 
 use engine::engine::UCCIEngine;

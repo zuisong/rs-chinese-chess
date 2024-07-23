@@ -47,14 +47,16 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
             for y in 0..BOARD_HEIGHT as usize {
                 let chess = game.chesses[y][x];
 
-                if chess.chess_type().is_none() {
-                    continue;
-                }
+                let title = match chess.chess_type() {
+                    Some(t) => t.name_value(),
+                    None => continue,
+                };
+
+                let selected_chess = game.select_pos == (x as i32, y as i32).into();
 
                 let x = (x + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
                 let y = (y + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
                 let padding = 4;
-                let title = chess.chess_type().unwrap().name_value();
                 let mut button = Button::new(
                     (x + padding) as i32,
                     (y + padding) as i32,
@@ -67,10 +69,14 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
                 } else {
                     Color::Blue
                 });
+
                 button.set_label_size((CHESS_SIZE * 6 / 10) as i32);
                 button.set_frame(FrameType::RoundedBox);
                 button.set_selection_color(Color::DarkBlue);
                 button.set_color(Color::White);
+                if selected_chess {
+                    button.set_color(Color::Black);
+                }
                 group.add(&button);
             }
         }
@@ -85,14 +91,13 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
             // 点击棋盘
             game.click((x, y));
             group.clear();
-            w.redraw();
 
             game.robot_move();
-
+            w.redraw();
             redrawn(&mut group, &game);
             return true;
         }
-        return false;
+        false
     });
     let mut vpack = Pack::default_fill().with_type(PackType::Vertical);
     vpack.set_spacing(10);
@@ -126,11 +131,9 @@ trait BoardExt {
 
 impl BoardExt for Board {
     fn click(&mut self, pos: (i32, i32)) {
-        let selected = self.select(pos.clone());
-        if !selected {
-            if self.chess_at(self.select_pos).player() == Some(self.turn) {
-                self.move_to(self.select_pos, pos.into());
-            }
+        let selected = self.select(pos);
+        if !selected && self.chess_at(self.select_pos).player() == Some(self.turn) {
+            self.move_to(self.select_pos, pos.into());
         }
     }
     fn robot_move(&mut self) -> bool {
@@ -156,7 +159,7 @@ impl BoardExt for Board {
             return true;
         }
 
-        return false;
+        false
     }
 
     fn move_to(
@@ -166,10 +169,10 @@ impl BoardExt for Board {
     ) {
         self.do_move(&Move {
             player: self.turn,
-            from: from.into(),
-            to: to.into(),
-            chess: self.chess_at(from.into()),
-            capture: self.chess_at(to.into()),
+            from,
+            to,
+            chess: self.chess_at(from),
+            capture: self.chess_at(to),
         });
     }
 }

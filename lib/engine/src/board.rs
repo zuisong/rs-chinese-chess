@@ -20,11 +20,7 @@ impl Chess {
         }
     }
     pub fn belong_to(&self, player: Player) -> bool {
-        match self {
-            Chess::Black(_) => player == Player::Black,
-            Chess::Red(_) => player == Player::Red,
-            Chess::None => false,
-        }
+        Some(player) == self.player()
     }
     pub fn chess_type(&self) -> Option<ChessType> {
         match self {

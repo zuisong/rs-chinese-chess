@@ -1,4 +1,3 @@
-#![feature(lazy_cell)]
 pub mod board;
 pub mod constant;
 pub mod engine;
