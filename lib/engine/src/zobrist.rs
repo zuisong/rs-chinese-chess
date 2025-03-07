@@ -7,7 +7,7 @@ pub struct Zobristable {
 
 fn rand64() -> u64 {
     let mut buf = [0; 8];
-    getrandom::getrandom(&mut buf).unwrap();
+    fastrand::fill(&mut buf);
     let mut value = 0;
     for i in 0..8 {
         value += (buf[i] as u64) << (8 * i as i32);

@@ -1,12 +1,12 @@
 [package]
-edition = "2021"
+edition = "2024"
 name = "ui"
 version = "0.1.0"
 
 [dependencies]
-anyhow = "1.0.86"
-bytes = "1.6.1"
-fltk = {version = "1.4.32", features = ["fltk-bundled"]}
+anyhow = "1.0.94"
+bytes = "1.9.0"
+fltk = {version = "1.5.1", features = ["fltk-bundled"]}
 engine = { path = "./lib/engine" }
 
 

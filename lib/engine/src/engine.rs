@@ -1,5 +1,4 @@
 use crate::board::{Board, Move};
-use getrandom::getrandom;
 use regex::Regex;
 use std::io;
 
@@ -56,7 +55,7 @@ impl UCCIEngine {
             .collect::<Vec<&PreLoad>>();
         if candidates.len() > 0 {
             let mut buf = [0; 4];
-            getrandom(&mut buf).unwrap();
+            fastrand::fill(&mut buf);
             let index = i32::from_be_bytes(buf) % candidates.len() as i32;
             Some(candidates[index as usize].best_move.clone())
         } else {
