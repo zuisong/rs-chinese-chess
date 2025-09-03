@@ -32,7 +32,7 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
     {
         // 画棋盘
         let data = include_bytes!("../resources/board.jpg");
-        let mut background = SharedImage::from_image(JpegImage::from_data(data)?)?;
+        let mut background = SharedImage::from_image(&JpegImage::from_data(data)?)?;
         Frame::new(0, 0, CHESS_BOARD_WIDTH, CHESS_BOARD_HEIGHT, "")
             .draw(move |f| background.draw(f.x(), f.y(), f.width(), f.height()));
     }
@@ -142,12 +142,11 @@ impl BoardExt for Board {
         }
 
         let (_value, best_move) = self.iterative_deepening(3);
-        if let Some(m) = best_move {
-            if m.is_valid() {
+        if let Some(m) = best_move
+            && m.is_valid() {
                 self.do_move(&m);
                 return true;
             }
-        }
         unreachable!();
     }
 
