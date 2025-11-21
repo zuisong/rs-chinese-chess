@@ -1,3 +1,27 @@
+/*
+ * 详细中文注释 - 象棋棋盘模块（Board 与棋子表示）
+ *
+ * 设计要点
+ * - 棋盘尺寸为 9 列 x 10 行，红方在下，黑方在上
+ * - 棋子用 Chess 枚举表示，分黑方/红方与具体棋种；Chess::None 表示空格
+ * - ChessType 定义了具体棋子的类型（King/Advisor/Bishop/Knight/Rook/Cannon/Pawn）及其属性
+ * - Player 表示当前轮到的玩家（Red/Black）
+ * - Position 表示棋子在棋盘上的坐标，行列从 0 开始，内部实现与坐标系紧密绑定
+ * - Move 记录一次落子信息，包括起点、终点、走子的棋种以及吃子信息
+ * - Board 保存当前局面的完整状态：棋子排布、轮到哪一方、历史记录、Zobrist 哈希量等
+ *
+ * 主要功能（保持与现有实现一致）
+ * - 初始化棋盘、从 FEN/类 FEN 字符串加载局面
+ * - 移动的应用、撤销、以及是否为合法走法的判定
+ * - 走法生成、对局面中的吃子逻辑以及是否将军/吃子检查
+ * - 简单评估函数、以及简化的搜索（α-β、PV 倍增、迭代深化、静态棋力评估）
+ * - Zobrist 哈希值的维护与置换表接口初步实现（与外部 zobrist.rs 配合）
+ *
+ * 注意
+ * - 本注释仅为帮助理解代码设计与实现细节，具体行为以代码为准
+ * - 任何对实现的改动都应保持现有接口不变，确保编译通过
+ */
+
 use std::vec;
 
 use crate::constant::{FEN_MAP, KILL, MAX, MAX_DEPTH, MIN, RECORD_SIZE, ZOBRIST_TABLE, ZOBRIST_TABLE_LOCK};
@@ -106,11 +130,7 @@ pub enum Player {
 
 impl Player {
     pub fn value(&self) -> i32 {
-        if self == &Player::Red {
-            0
-        } else {
-            1
-        }
+        if self == &Player::Red { 0 } else { 1 }
     }
     pub fn next(&self) -> Player {
         if self == &Player::Red {
@@ -348,6 +368,8 @@ const INITIATIVE_BONUS: i32 = 3;
 
 const RECORD_NONE: Option<Record> = None;
 impl Board {
+    // 初始化标准象棋开局局面
+    // 返回一个新的 Board 实例，棋子按标准布局摆放，红方先手
     pub fn init() -> Self {
         let mut board = Board {
             chesses: [
@@ -519,6 +541,8 @@ impl Board {
         }
         board
     }
+    // 应用走子到棋盘，但不更新历史记录（用于临时模拟）
+    // 参数 m: 要应用的走子
     pub fn apply_move(&mut self, m: &Move) {
         let chess = self.chess_at(m.from);
         self.set_chess(m.to, chess);
@@ -527,11 +551,15 @@ impl Board {
         self.zobrist_value_lock = ZOBRIST_TABLE_LOCK.apply_move(self.zobrist_value_lock, m);
         self.turn = m.player.next();
     }
+    // 执行走子并更新历史记录（用于实际游戏）
+    // 参数 m: 要执行的走子
     pub fn do_move(&mut self, m: &Move) {
         self.apply_move(m);
         self.distance += 1;
         self.move_history.push(m.clone());
     }
+    // 撤销走子并恢复历史记录（用于回溯）
+    // 参数 m: 要撤销的走子
     pub fn undo_move(&mut self, m: &Move) {
         let chess = self.chess_at(m.to);
         self.set_chess(m.from, chess);
@@ -606,33 +634,35 @@ impl Board {
         }
     }
 
+    // 检查走子是否合法（包括规则和将军检查）
+    // 参数 m: 要检查的走子
+    // 返回: true 如果合法，否则 false
     pub fn is_move_legal(&self, m: &Move) -> bool {
         let chess = self.chess_at(m.from);
 
-        // 1. Check if the piece belongs to the current player
+        // 1. 检查当前走棋方是否拥有该棋
         if !chess.belong_to(self.turn) {
             return false;
         }
 
-        // 2. Check if the destination is occupied by a friendly piece
+        // 2. 目标格子若有同色棋子则不可走
         if self.chess_at(m.to).belong_to(self.turn) {
             return false;
         }
 
-        // 3. Check if the move is valid for the piece type
+        // 3. 根据棋种判定走法是否合法
         if let Some(ct) = chess.chess_type() {
             if !self.is_move_valid_for_chess_type(ct, m.from, m.to) {
                 return false;
             }
         } else {
-            // No piece at the from position
+            // 起手位置无棋子
             return false;
         }
 
-        // 4. Check if the move leaves the king in check
+        // 4. 走子后是否将军，若将军则不合法
         let mut temp_board = self.clone();
-        // The move `m` comes from an external source, and its `capture` field is not reliable.
-        // I need to create a new move with the correct capture field.
+        // capture 字段在外部来源时可能不可靠，这里构造一个完整走法
         let mut complete_move = m.clone();
         complete_move.capture = temp_board.chess_at(m.to);
 
@@ -649,22 +679,15 @@ impl Board {
             return false;
         }
         match ct {
-            ChessType::King => {
-                (from.row - to.row).abs() + (from.col - to.col).abs() == 1 && in_palace(to, self.turn)
-            }
+            ChessType::King => (from.row - to.row).abs() + (from.col - to.col).abs() == 1 && in_palace(to, self.turn),
             ChessType::Advisor => {
-                (from.row - to.row).abs() == 1
-                    && (from.col - to.col).abs() == 1
-                    && in_palace(to, self.turn)
+                (from.row - to.row).abs() == 1 && (from.col - to.col).abs() == 1 && in_palace(to, self.turn)
             }
             ChessType::Bishop => {
                 (from.row - to.row).abs() == 2
                     && (from.col - to.col).abs() == 2
                     && in_country(to.row, self.turn)
-                    && self.chess_at(Position::new(
-                        (from.row + to.row) / 2,
-                        (from.col + to.col) / 2,
-                    )) == Chess::None
+                    && self.chess_at(Position::new((from.row + to.row) / 2, (from.col + to.col) / 2)) == Chess::None
             }
             ChessType::Knight => {
                 let row_diff = (from.row - to.row).abs();
@@ -674,25 +697,19 @@ impl Board {
                 }
 
                 if row_diff == 2 {
-                    // Moving 2 rows, 1 col
-                    if self.chess_at(Position::new((from.row + to.row) / 2, from.col))
-                        != Chess::None
-                    {
+                    // 跳马：中间是否有阻挡
+                    if self.chess_at(Position::new((from.row + to.row) / 2, from.col)) != Chess::None {
                         return false;
                     }
                 } else {
-                    // Moving 1 row, 2 cols
-                    if self.chess_at(Position::new(from.row, (from.col + to.col) / 2))
-                        != Chess::None
-                    {
+                    // 跳马：横向阻挡
+                    if self.chess_at(Position::new(from.row, (from.col + to.col) / 2)) != Chess::None {
                         return false;
                     }
                 }
                 true
             }
-            ChessType::Rook => {
-                (from.row == to.row || from.col == to.col) && !self.has_chess_between(from, to)
-            }
+            ChessType::Rook => (from.row == to.row || from.col == to.col) && !self.has_chess_between(from, to),
             ChessType::Cannon => {
                 if from.row == to.row || from.col == to.col {
                     if self.chess_at(to) == Chess::None {
@@ -705,6 +722,7 @@ impl Board {
                 }
             }
             ChessType::Pawn => {
+                // 兵/卒的推进规则
                 let forward_ok = if self.turn == Player::Red {
                     to.row == from.row - 1 && to.col == from.col
                 } else {
@@ -795,7 +813,7 @@ impl Board {
         }
 
         // 是否被兵将军
-        for pos in vec![
+        for pos in [
             position_base.left(1),
             position_base.right(1),
             if player == Player::Red {
@@ -986,6 +1004,9 @@ impl Board {
         }
         targets
     }
+    // 生成当前玩家的所有合法走子
+    // 参数 capture_only: true 只生成吃子走子，false 生成所有走子
+    // 返回: 合法走子的向量，按优先级排序
     pub fn generate_move(&mut self, capture_only: bool) -> Vec<Move> {
         self.gen_counter += 1;
         let mut moves = vec![];
@@ -1033,7 +1054,9 @@ impl Board {
         });
         moves
     }
-    // 简单的评价，双方每个棋子的子力之和的差
+    // 简单的评价函数，计算双方棋子的子力差（包括位置加成）
+    // 参数 player: 当前评估的玩家
+    // 返回: 评估分数，正数表示 player 优势
     pub fn evaluate(&self, player: Player) -> i32 {
         let mut red_score = 0;
         let mut black_score = 0;
@@ -1090,6 +1113,11 @@ impl Board {
             self.records[(self.zobrist_value & (RECORD_SIZE - 1) as u64) as usize] = Some(record);
         }
     }
+    // Alpha-Beta 搜索与 PV 倍增（主搜索函数）
+    // 参数 depth: 搜索深度
+    // 参数 alpha: Alpha 值（下界）
+    // 参数 beta: Beta 值（上界）
+    // 返回: (评估分数, 最佳走子)
     pub fn alpha_beta_pvs(&mut self, depth: i32, mut alpha: i32, beta: i32) -> (i32, Option<Move>) {
         // if let Some(record) = self.find_record() {
         //     if record.depth <= depth {
@@ -1162,6 +1190,10 @@ impl Board {
         // 所以深度越小，depth越大，减去depth的局面分就越低
         return (if count == 0 { KILL - depth } else { alpha }, best_move);
     }
+    // 静态搜索（Quiescence Search），处理吃子序列
+    // 参数 alpha: Alpha 值
+    // 参数 beta: Beta 值
+    // 返回: 静态评估分数
     pub fn quies(&mut self, mut alpha: i32, beta: i32) -> i32 {
         if self.distance > MAX_DEPTH {
             return self.evaluate(self.turn);
@@ -1195,6 +1227,9 @@ impl Board {
         }
         return alpha;
     }
+    // 迭代深化搜索（Iterative Deepening），逐步增加深度
+    // 参数 max_depth: 最大搜索深度
+    // 返回: (最终评估分数, 最佳走子)
     pub fn iterative_deepening(&mut self, max_depth: i32) -> (i32, Option<Move>) {
         if max_depth > 3 {
             for depth in 3..max_depth + 1 {

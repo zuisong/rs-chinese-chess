@@ -1,4 +1,4 @@
-use engine::board::{Board, Move, Player, Position, BOARD_HEIGHT, BOARD_WIDTH};
+use engine::board::{BOARD_HEIGHT, BOARD_WIDTH, Board, Move, Player, Position};
 use fltk::{
     app,
     button::Button,
@@ -92,7 +92,6 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
     redrawn(&mut group, &game);
 
     chess_window.handle({
-        let s = s.clone();
         move |_, event| {
             if let Event::Push = event {
                 let (click_x, click_y) = app::event_coords();
@@ -110,10 +109,9 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
     let mut vpack = Pack::default_fill().with_type(PackType::Vertical);
     vpack.set_spacing(10);
     flex.add(&vpack);
-    
+
     let mut undo_button = Button::default().with_label("悔棋");
     undo_button.set_callback({
-        let s = s.clone();
         move |_| {
             s.send(Message::Undo);
         }
@@ -139,12 +137,13 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
                     if current_turn == Player::Red {
                         let history_len_before = game.move_history.len();
                         game.click((x, y));
-                        if game.move_history.len() > history_len_before { // A move was made
+                        if game.move_history.len() > history_len_before {
+                            // A move was made
                             group.clear();
                             chess_window.redraw();
                             redrawn(&mut group, &game);
                             app::flush();
-                            
+
                             if !game.robot_move() {
                                 // AI failed to move. Revert player's move to un-stick the game.
                                 if let Some(player_move) = game.move_history.last().cloned() {
@@ -156,7 +155,7 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
                             redrawn(&mut group, &game);
                         }
                     }
-                },
+                }
                 Message::Undo => {
                     if game.turn == Player::Red {
                         // A complete turn consists of the AI's move and the Player's move.
@@ -216,7 +215,7 @@ impl BoardExt for Board {
             }
         }
         println!("AI found no move.");
-        return false;
+        false
     }
 
     fn select(&mut self, pos: (i32, i32)) -> bool {

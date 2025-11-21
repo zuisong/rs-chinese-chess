@@ -1,4 +1,16 @@
-use crate::board::{Chess, Move, BOARD_HEIGHT, BOARD_WIDTH};
+/*
+ 详细中文注释 - Zobrist 哈希实现（棋盘状态哈希）
+
+ 设计要点
+ - Zobrist 哈希用于对棋盘状态进行快速、可更新的唯一标识，便于实现置换表（TT）等优化
+ - hash_table[layer][position_index][piece_type]，其中 layer 表示棋子颜色（0/1），position_index 为 i*width + j
+ - 通过对棋子位置与类型进行异或操作实现哈希的增量更新
+
+ 关键约定
+ - calc_chesses 用于计算当前棋盘的哈希值
+ - apply_move/undo_move 用于在落子前后更新哈希值，确保棋局状态一致性
+*/
+use crate::board::{BOARD_HEIGHT, BOARD_WIDTH, Chess, Move};
 
 #[derive(Debug)]
 pub struct Zobristable {
@@ -6,13 +18,7 @@ pub struct Zobristable {
 }
 
 fn rand64() -> u64 {
-    let mut buf = [0; 8];
-    fastrand::fill(&mut buf);
-    let mut value = 0;
-    for i in 0..8 {
-        value += (buf[i] as u64) << (8 * i as i32);
-    }
-    value
+    fastrand::u64(u64::MIN..=u64::MAX)
 }
 
 impl Zobristable {

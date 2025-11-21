@@ -1,3 +1,4 @@
+/* 引擎核心：对接棋盘与搜索，提供 UCCI 接口的核心能力 */
 use crate::board::{Board, Move, Position};
 use regex::Regex;
 use std::io;
@@ -20,10 +21,11 @@ impl UCCIEngine {
     pub fn new(book_data: Option<&str>) -> Self {
         let mut book = vec![];
         if let Some(data) = book_data {
-            for line in data.split("\n") {
-                if line.len() == 0 {
-                    continue;
-                }
+            for line in data
+                .lines()
+                .map(|it| it.trim())
+                .filter(|it| !it.is_empty())
+            {
                 let mut tokens = line.splitn(3, " ");
                 let m = tokens.next().unwrap();
                 let weight = tokens.next().unwrap();
@@ -138,6 +140,8 @@ impl UCCIEngine {
         }
     }
 
+    // 执行搜索并输出最佳走子
+    // 参数 depth: 搜索深度
     pub fn go(&mut self, depth: i32) {
         if let Some(m) = self.search_in_book() {
             println!("bestmove {}", m);
