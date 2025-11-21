@@ -29,6 +29,13 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
         .with_pos(pand, pand)
         .with_size(CHESS_BOARD_WIDTH + 120, CHESS_BOARD_HEIGHT);
 
+    enum Message {
+        Click(i32, i32),
+        Undo,
+    }
+
+    let (s, r) = app::channel::<Message>();
+
     {
         // 画棋盘
         let data = include_bytes!("../resources/board.jpg");
@@ -83,26 +90,36 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
     }
 
     redrawn(&mut group, &game);
-    chess_window.handle(move |w, event| {
-        if let Event::Push = event {
-            let (click_x, click_y) = app::event_coords();
-            let (x, y) = (click_x / CHESS_SIZE as i32, click_y / CHESS_SIZE as i32);
-            dbg!(x, y);
-            // 点击棋盘
-            game.click((x, y));
-            group.clear();
 
-            game.robot_move();
-            w.redraw();
-            redrawn(&mut group, &game);
-            return true;
+    chess_window.handle({
+        let s = s.clone();
+        move |_, event| {
+            if let Event::Push = event {
+                let (click_x, click_y) = app::event_coords();
+                if click_x > CHESS_BOARD_WIDTH {
+                    return false; // Let button callbacks handle it
+                }
+                let (x, y) = (click_x / CHESS_SIZE as i32, click_y / CHESS_SIZE as i32);
+                s.send(Message::Click(x, y));
+                return true;
+            }
+            false
         }
-        false
     });
+
     let mut vpack = Pack::default_fill().with_type(PackType::Vertical);
     vpack.set_spacing(10);
     flex.add(&vpack);
-    Button::default().with_label("悔棋");
+    
+    let mut undo_button = Button::default().with_label("悔棋");
+    undo_button.set_callback({
+        let s = s.clone();
+        move |_| {
+            s.send(Message::Undo);
+        }
+    });
+    vpack.add(&undo_button);
+
     Button::default().with_label("功能");
     Button::default().with_label("功能");
     Button::default().with_label("功能");
@@ -113,7 +130,54 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
     flex.end();
     top_window.end();
     top_window.show();
-    app.run().unwrap();
+
+    while app.wait() {
+        if let Some(msg) = r.recv() {
+            match msg {
+                Message::Click(x, y) => {
+                    let current_turn = game.turn;
+                    if current_turn == Player::Red {
+                        let history_len_before = game.move_history.len();
+                        game.click((x, y));
+                        if game.move_history.len() > history_len_before { // A move was made
+                            group.clear();
+                            chess_window.redraw();
+                            redrawn(&mut group, &game);
+                            app::flush();
+                            
+                            if !game.robot_move() {
+                                // AI failed to move. Revert player's move to un-stick the game.
+                                if let Some(player_move) = game.move_history.last().cloned() {
+                                    game.undo_move(&player_move);
+                                }
+                            }
+                            group.clear();
+                            chess_window.redraw();
+                            redrawn(&mut group, &game);
+                        }
+                    }
+                },
+                Message::Undo => {
+                    if game.turn == Player::Red {
+                        // A complete turn consists of the AI's move and the Player's move.
+                        // We must undo both to return to the previous state.
+                        if let Some(ai_move) = game.move_history.last().cloned() {
+                            game.undo_move(&ai_move);
+                        }
+                        if let Some(player_move) = game.move_history.last().cloned() {
+                            game.undo_move(&player_move);
+                        }
+
+                        game.select_pos = Position { row: -1, col: -1 }; // Reset selection
+
+                        group.clear();
+                        chess_window.redraw();
+                        redrawn(&mut group, &game);
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -142,12 +206,17 @@ impl BoardExt for Board {
         }
 
         let (_value, best_move) = self.iterative_deepening(3);
-        if let Some(m) = best_move
-            && m.is_valid() {
+        if let Some(m) = best_move {
+            if self.is_move_legal(&m) {
                 self.do_move(&m);
                 return true;
+            } else {
+                println!("AI generated an illegal move, not moving: {:?}", m);
+                return false;
             }
-        unreachable!();
+        }
+        println!("AI found no move.");
+        return false;
     }
 
     fn select(&mut self, pos: (i32, i32)) -> bool {
