@@ -166,12 +166,15 @@ impl BoardExt for Board {
         from: Position, // 起手位置
         to: Position,   // 落子位置
     ) {
-        self.do_move(&Move {
+        let m = Move {
             player: self.turn,
             from,
             to,
             chess: self.chess_at(from),
             capture: self.chess_at(to),
-        });
+        };
+        if self.is_move_legal(&m) {
+            self.do_move(&m);
+        }
     }
 }

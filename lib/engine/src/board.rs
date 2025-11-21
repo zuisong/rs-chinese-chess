@@ -217,6 +217,7 @@ pub struct Record {
     pub turn: Player,
 }
 
+#[derive(Clone, Debug)]
 pub struct Board {
     // 9×10的棋盘，红方在下，黑方在上
     pub chesses: [[Chess; BOARD_WIDTH as usize]; BOARD_HEIGHT as usize],
@@ -604,6 +605,147 @@ impl Board {
             false
         }
     }
+
+    pub fn is_move_legal(&self, m: &Move) -> bool {
+        let chess = self.chess_at(m.from);
+
+        // 1. Check if the piece belongs to the current player
+        if !chess.belong_to(self.turn) {
+            return false;
+        }
+
+        // 2. Check if the destination is occupied by a friendly piece
+        if self.chess_at(m.to).belong_to(self.turn) {
+            return false;
+        }
+
+        // 3. Check if the move is valid for the piece type
+        if let Some(ct) = chess.chess_type() {
+            if !self.is_move_valid_for_chess_type(ct, m.from, m.to) {
+                return false;
+            }
+        } else {
+            // No piece at the from position
+            return false;
+        }
+
+        // 4. Check if the move leaves the king in check
+        let mut temp_board = self.clone();
+        // The move `m` comes from an external source, and its `capture` field is not reliable.
+        // I need to create a new move with the correct capture field.
+        let mut complete_move = m.clone();
+        complete_move.capture = temp_board.chess_at(m.to);
+
+        temp_board.apply_move(&complete_move);
+        if temp_board.is_checked(self.turn) {
+            return false;
+        }
+
+        true
+    }
+
+    fn is_move_valid_for_chess_type(&self, ct: ChessType, from: Position, to: Position) -> bool {
+        if !in_board(to) {
+            return false;
+        }
+        match ct {
+            ChessType::King => {
+                (from.row - to.row).abs() + (from.col - to.col).abs() == 1 && in_palace(to, self.turn)
+            }
+            ChessType::Advisor => {
+                (from.row - to.row).abs() == 1
+                    && (from.col - to.col).abs() == 1
+                    && in_palace(to, self.turn)
+            }
+            ChessType::Bishop => {
+                (from.row - to.row).abs() == 2
+                    && (from.col - to.col).abs() == 2
+                    && in_country(to.row, self.turn)
+                    && self.chess_at(Position::new(
+                        (from.row + to.row) / 2,
+                        (from.col + to.col) / 2,
+                    )) == Chess::None
+            }
+            ChessType::Knight => {
+                let row_diff = (from.row - to.row).abs();
+                let col_diff = (from.col - to.col).abs();
+                if !((row_diff == 1 && col_diff == 2) || (row_diff == 2 && col_diff == 1)) {
+                    return false;
+                }
+
+                if row_diff == 2 {
+                    // Moving 2 rows, 1 col
+                    if self.chess_at(Position::new((from.row + to.row) / 2, from.col))
+                        != Chess::None
+                    {
+                        return false;
+                    }
+                } else {
+                    // Moving 1 row, 2 cols
+                    if self.chess_at(Position::new(from.row, (from.col + to.col) / 2))
+                        != Chess::None
+                    {
+                        return false;
+                    }
+                }
+                true
+            }
+            ChessType::Rook => {
+                (from.row == to.row || from.col == to.col) && !self.has_chess_between(from, to)
+            }
+            ChessType::Cannon => {
+                if from.row == to.row || from.col == to.col {
+                    if self.chess_at(to) == Chess::None {
+                        !self.has_chess_between(from, to)
+                    } else {
+                        self.count_chess_between(from, to) == 1
+                    }
+                } else {
+                    false
+                }
+            }
+            ChessType::Pawn => {
+                let forward_ok = if self.turn == Player::Red {
+                    to.row == from.row - 1 && to.col == from.col
+                } else {
+                    to.row == from.row + 1 && to.col == from.col
+                };
+                if in_country(from.row, self.turn) {
+                    forward_ok
+                } else {
+                    let side_ok = from.row == to.row && (from.col - to.col).abs() == 1;
+                    forward_ok || side_ok
+                }
+            }
+        }
+    }
+
+    pub fn count_chess_between(&self, posa: Position, posb: Position) -> i32 {
+        let mut count = 0;
+        if posa.row == posb.row {
+            for j in posa.col.min(posb.col) + 1..posb.col.max(posa.col) {
+                if self
+                    .chess_at(Position::new(posa.row, j))
+                    .chess_type()
+                    .is_some()
+                {
+                    count += 1;
+                }
+            }
+        } else if posa.col == posb.col {
+            for i in posa.row.min(posb.row) + 1..posb.row.max(posa.row) {
+                if self
+                    .chess_at(Position::new(i, posa.col))
+                    .chess_type()
+                    .is_some()
+                {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
     pub fn is_checked(&self, player: Player) -> bool {
         let position_base = self.king_position(player).unwrap();
 

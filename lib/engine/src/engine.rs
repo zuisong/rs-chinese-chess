@@ -1,4 +1,4 @@
-use crate::board::{Board, Move};
+use crate::board::{Board, Move, Position};
 use regex::Regex;
 use std::io;
 
@@ -117,15 +117,22 @@ impl UCCIEngine {
                 self.board = Board::init();
             }
             if let Some(moves) = captures.name("moves") {
-                for m in moves.as_str().split(" ") {
-                    let (from, to) = m.split_at(2);
-                    self.board.apply_move(&Move {
+                for m_str in moves.as_str().split(" ") {
+                    let (from_str, to_str) = m_str.split_at(2);
+                    let from: Position = from_str.into();
+                    let to: Position = to_str.into();
+                    let m = Move {
                         player: self.board.turn,
-                        from: from.into(),
-                        to: to.into(),
-                        chess: self.board.chess_at(from.into()),
-                        capture: self.board.chess_at(to.into()),
-                    });
+                        from,
+                        to,
+                        chess: self.board.chess_at(from),
+                        capture: self.board.chess_at(to),
+                    };
+
+                    // Only apply the move if it is legal
+                    if self.board.is_move_legal(&m) {
+                        self.board.apply_move(&m);
+                    }
                 }
             }
         }
