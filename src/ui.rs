@@ -1,11 +1,12 @@
 use engine::{
-    board::{BOARD_HEIGHT, BOARD_WIDTH, Board, Move, Player, Position},
+    board::{BOARD_HEIGHT, BOARD_WIDTH, Board, Chess, Move, Player, Position},
     engine::UCCIEngine,
     search::SearchState,
 };
 use fltk::{
     app,
     button::Button,
+    draw,
     enums::*,
     frame::Frame,
     group::*,
@@ -19,334 +20,356 @@ const CHESS_SIZE: usize = 57;
 const CHESS_BOARD_WIDTH: i32 = 521;
 const CHESS_BOARD_HEIGHT: i32 = 577;
 
-pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
-    let mut ui_search = SearchState::new();
-    let app = app::App::default();
-    let pand = 1;
-    let mut top_window = Window::new(
-        100,
-        100,
-        CHESS_BOARD_WIDTH + 120,
-        CHESS_BOARD_HEIGHT + pand * 2,
-        "中国象棋",
-    );
+#[derive(Debug, Clone, Copy)]
+enum Message {
+    Click(i32, i32),
+    Undo,
+    AIMove(Move),    // AI 计算完成，返回走法
+    NewGame(Player), // 重新开始，设置先手/后手
+}
 
-    let mut chess_window = Window::default()
-        .with_pos(pand, pand)
-        .with_size(CHESS_BOARD_WIDTH + 120, CHESS_BOARD_HEIGHT);
+struct ChessApp {
+    game: Board,
+    ui_search: SearchState,
+    engine: UCCIEngine,
+    ai_thinking: Arc<Mutex<bool>>,
+    human_side: Arc<Mutex<Player>>,
+    sender: app::Sender<Message>,
+    receiver: app::Receiver<Message>,
+    board_frame: Frame,
+    status_label: Frame,
+}
 
-    #[derive(Debug, Clone, Copy)]
-    enum Message {
-        Click(i32, i32),
-        Undo,
-        AIMove(Move),    // AI 计算完成，返回走法
-        NewGame(Player), // 重新开始，设置先手/后手
-    }
+impl ChessApp {
+    fn new(game: Board, engine: UCCIEngine) -> Self {
+        let (s, r) = app::channel::<Message>();
+        let ai_thinking = Arc::new(Mutex::new(false));
+        let human_side = Arc::new(Mutex::new(Player::Red));
 
-    let (s, r) = app::channel::<Message>();
+        let mut top_window = Window::new(
+            100,
+            100,
+            CHESS_BOARD_WIDTH + 160,
+            CHESS_BOARD_HEIGHT + 2,
+            "中国象棋 - 极美版",
+        );
 
-    // AI 是否正在思考
-    let ai_thinking = Arc::new(Mutex::new(false));
-    let human_side = Arc::new(Mutex::new(Player::Red));
+        let mut main_flex = Flex::default_fill().with_type(FlexType::Row);
 
-    {
-        // 画棋盘
-        let data = include_bytes!("../resources/board.jpg");
-        let mut background = SharedImage::from_image(&JpegImage::from_data(data)?)?;
-        Frame::new(0, 0, CHESS_BOARD_WIDTH, CHESS_BOARD_HEIGHT, "")
-            .draw(move |f| background.draw(f.x(), f.y(), f.width(), f.height()));
-    }
+        // --- 棋盘区 ---
+        let mut board_frame = Frame::default().with_size(CHESS_BOARD_WIDTH, CHESS_BOARD_HEIGHT);
+        main_flex.fixed(&board_frame, CHESS_BOARD_WIDTH);
 
-    let mut flex = Flex::default_fill();
+        // --- 侧边栏 ---
+        let mut sidebar = Pack::default().with_type(PackType::Vertical);
+        sidebar.set_spacing(15);
+        main_flex.add(&sidebar);
 
-    let mut group = Group::default_fill();
-    flex.fixed(&group, CHESS_BOARD_WIDTH);
+        // 顶部留白
+        Frame::default().with_size(140, 20);
 
-    fn redraw_board(group: &mut Group, game: &Board, human_side: Player) {
-        let flipped = human_side == Player::Black;
-        for actual_x in 0..BOARD_WIDTH as usize {
-            for actual_y in 0..BOARD_HEIGHT as usize {
-                let chess = game.chesses[actual_y][actual_x];
+        let mut status_label = Frame::default()
+            .with_size(140, 60)
+            .with_label("等待开始...");
+        status_label.set_label_size(18);
+        status_label.set_label_color(Color::from_rgb(50, 50, 50));
+        status_label.set_label_font(Font::HelveticaBoldItalic);
 
-                let title = match chess.chess_type() {
-                    Some(t) => t.name_value(),
-                    None => continue,
-                };
-
-                let selected_chess = game.select_pos == (actual_x as i32, actual_y as i32).into();
-
-                // 转换显示坐标：如果是黑方，则视角翻转（黑方在下）
-                let (display_x, display_y) = if flipped {
-                    (
-                        BOARD_WIDTH as usize - 1 - actual_x,
-                        BOARD_HEIGHT as usize - 1 - actual_y,
-                    )
+        let mut side_btn = Button::default()
+            .with_size(120, 50)
+            .with_label("执红 (先手)");
+        side_btn.set_color(Color::from_rgb(245, 245, 245));
+        side_btn.set_frame(FrameType::RoundedBox);
+        side_btn.set_selection_color(Color::from_rgb(230, 230, 230));
+        side_btn.set_label_size(16);
+        side_btn.set_callback({
+            let s = s.clone();
+            let h = human_side.clone();
+            move |b| {
+                let mut side_lock = h.lock().unwrap();
+                *side_lock = side_lock.next();
+                let side = *side_lock;
+                b.set_label(if side == Player::Red {
+                    "执红 (先手)"
                 } else {
-                    (actual_x, actual_y)
-                };
-
-                let x = (display_x + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
-                let y = (display_y + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
-                let padding = 4;
-                let mut button = Button::new(
-                    (x + padding) as i32,
-                    (y + padding) as i32,
-                    (CHESS_SIZE - 2 * padding) as i32,
-                    (CHESS_SIZE - 2 * padding) as i32,
-                    title,
-                );
-                button.set_label_color(if let Some(Player::Red) = chess.player() {
-                    Color::Red
-                } else {
-                    Color::Blue
+                    "执黑 (后手)"
                 });
-
-                button.set_label_size((CHESS_SIZE * 6 / 10) as i32);
-                button.set_frame(FrameType::RoundedBox);
-                button.set_selection_color(Color::DarkBlue);
-                button.set_color(Color::White);
-                if selected_chess {
-                    button.set_color(Color::Black);
-                }
-                group.add(&button);
+                s.send(Message::NewGame(side));
             }
+        });
+
+        let mut restart_button = Button::default()
+            .with_size(120, 50)
+            .with_label("重新开始");
+        restart_button.set_color(Color::from_rgb(220, 230, 255));
+        restart_button.set_frame(FrameType::RoundedBox);
+        restart_button.set_label_size(16);
+        restart_button.set_callback({
+            let s = s.clone();
+            let h = human_side.clone();
+            move |_| {
+                let side = *h.lock().unwrap();
+                s.send(Message::NewGame(side));
+            }
+        });
+
+        let mut undo_button = Button::default()
+            .with_size(120, 50)
+            .with_label("悔棋回手");
+        undo_button.set_color(Color::from_rgb(255, 235, 235));
+        undo_button.set_frame(FrameType::RoundedBox);
+        undo_button.set_label_size(16);
+        undo_button.set_callback({
+            let s = s.clone();
+            move |_| s.send(Message::Undo)
+        });
+
+        sidebar.end();
+        main_flex.end();
+        top_window.end();
+        top_window.show();
+
+        board_frame.handle({
+            let s = s.clone();
+            let h = human_side.clone();
+            move |_, event| {
+                if let Event::Push = event {
+                    let (click_x, click_y) = app::event_coords();
+                    let (mut x, mut y) = (click_x / CHESS_SIZE as i32, click_y / CHESS_SIZE as i32);
+                    if *h.lock().unwrap() == Player::Black {
+                        x = BOARD_WIDTH - 1 - x;
+                        y = BOARD_HEIGHT - 1 - y;
+                    }
+                    s.send(Message::Click(x, y));
+                    return true;
+                }
+                false
+            }
+        });
+
+        Self {
+            game,
+            ui_search: SearchState::new(),
+            engine,
+            ai_thinking,
+            human_side,
+            sender: s,
+            receiver: r,
+            board_frame,
+            status_label,
         }
     }
 
-    redraw_board(&mut group, &game, *human_side.lock().unwrap());
+    fn redraw(&mut self) {
+        let game = self.game.clone();
+        let human_side = *self.human_side.lock().unwrap();
+        let last_move = self.ui_search.move_history.last().cloned();
 
-    chess_window.handle({
-        let human_side = human_side.clone();
-        move |_, event| {
-            if let Event::Push = event {
-                let (click_x, click_y) = app::event_coords();
-                if click_x > CHESS_BOARD_WIDTH {
-                    return false; // Let button callbacks handle it
-                }
-                let (mut x, mut y) = (click_x / CHESS_SIZE as i32, click_y / CHESS_SIZE as i32);
-                if *human_side.lock().unwrap() == Player::Black {
-                    x = BOARD_WIDTH - 1 - x;
-                    y = BOARD_HEIGHT - 1 - y;
-                }
-                s.send(Message::Click(x, y));
-                return true;
+        self.board_frame.draw(move |f| {
+            let board_img_data = include_bytes!("../resources/board.jpg");
+            let mut background = SharedImage::from_image(&JpegImage::from_data(board_img_data).unwrap()).unwrap();
+            background.draw(f.x(), f.y(), f.width(), f.height());
+
+            let flipped = human_side == Player::Black;
+
+            // 1. 绘制上一步的高亮
+            if let Some(m) = last_move {
+                let pos_from = if flipped { m.from.flip() } else { m.from };
+                let pos_to = if flipped { m.to.flip() } else { m.to };
+
+                let highlight_color = Color::from_rgb(255, 255, 200); // Soft yellow highlight
+                draw::set_draw_color(highlight_color);
+
+                let draw_highlight = |pos: Position| {
+                    let rx = (pos.col + 1) * CHESS_SIZE as i32 - CHESS_SIZE as i32 / 2 - 24;
+                    let ry = (pos.row + 1) * CHESS_SIZE as i32 - CHESS_SIZE as i32 / 2 - 24;
+                    draw::draw_rect_fill(
+                        rx + 4,
+                        ry + 4,
+                        CHESS_SIZE as i32 - 8,
+                        CHESS_SIZE as i32 - 8,
+                        highlight_color,
+                    );
+                };
+                draw_highlight(pos_from);
+                draw_highlight(pos_to);
             }
-            false
-        }
-    });
 
-    let mut vpack = Pack::default_fill().with_type(PackType::Vertical);
-    vpack.set_spacing(10);
-    flex.add(&vpack);
+            // 2. 绘制选中棋子的高亮
+            if game.select_pos.row != -1 {
+                let pos = if flipped {
+                    game.select_pos.flip()
+                } else {
+                    game.select_pos
+                };
+                let rx = (pos.col + 1) * CHESS_SIZE as i32 - CHESS_SIZE as i32 / 2 - 24;
+                let ry = (pos.row + 1) * CHESS_SIZE as i32 - CHESS_SIZE as i32 / 2 - 24;
 
-    let mut side_btn = Button::default()
-        .with_size(100, 40)
-        .with_label(if *human_side.lock().unwrap() == Player::Red {
-            "执红 (先手)"
-        } else {
-            "执黑 (后手)"
-        });
-    side_btn.set_color(Color::from_rgb(240, 240, 240));
-    side_btn.set_frame(FrameType::RoundedBox);
-    side_btn.set_callback({
-        let s = s.clone();
-        let human_side = human_side.clone();
-        move |b| {
-            let mut side_lock = human_side.lock().unwrap();
-            *side_lock = side_lock.next();
-            let side = *side_lock;
-            b.set_label(if side == Player::Red {
-                "执红 (先手)"
-            } else {
-                "执黑 (后手)"
-            });
-            s.send(Message::NewGame(side));
-        }
-    });
-    vpack.add(&side_btn);
+                draw::set_line_style(draw::LineStyle::Solid, 4);
+                draw::set_draw_color(Color::from_rgb(0, 200, 255)); // Deeper cyan
+                draw::draw_arc(rx, ry, CHESS_SIZE as i32 - 1, CHESS_SIZE as i32 - 1, 0.0, 360.0);
+                draw::set_line_style(draw::LineStyle::Solid, 1);
+            }
 
-    let mut restart_button = Button::default()
-        .with_size(100, 40)
-        .with_label("重新开始");
-    restart_button.set_color(Color::from_rgb(230, 230, 255));
-    restart_button.set_frame(FrameType::RoundedBox);
-    restart_button.set_callback({
-        let s = s.clone();
-        let side_btn = side_btn.clone();
-        move |_| {
-            let side = if side_btn.label() == "执红 (先手)" {
-                Player::Red
-            } else {
-                Player::Black
-            };
-            s.send(Message::NewGame(side));
-        }
-    });
-    vpack.add(&restart_button);
-
-    let mut undo_button = Button::default()
-        .with_size(100, 40)
-        .with_label("悔棋");
-    undo_button.set_color(Color::from_rgb(255, 240, 240));
-    undo_button.set_frame(FrameType::RoundedBox);
-    undo_button.set_callback({
-        let s = s.clone();
-        move |_| {
-            s.send(Message::Undo);
-        }
-    });
-    vpack.add(&undo_button);
-
-    vpack.end();
-    vpack.auto_layout();
-    flex.fixed(&Group::default().with_size(10, 10), 10);
-    flex.end();
-    top_window.end();
-    top_window.show();
-
-    while app.wait() {
-        if let Some(msg) = r.recv() {
-            match msg {
-                Message::Click(x, y) => {
-                    let current_turn = game.turn;
-                    // 检查是否 AI 正在思考
-                    if *ai_thinking.lock().unwrap() {
-                        println!("⏳ AI 正在思考中，请稍候...");
+            // 3. 绘制棋子
+            for row in 0..BOARD_HEIGHT as usize {
+                for col in 0..BOARD_WIDTH as usize {
+                    let chess = game.chesses[row][col];
+                    if chess == Chess::None {
                         continue;
                     }
 
-                    let side = *human_side.lock().unwrap();
-                    if current_turn == side {
-                        let history_len_before = ui_search.move_history.len();
-                        game.click(&mut ui_search, (x, y));
-                        if ui_search.move_history.len() > history_len_before {
-                            // A move was made
-                            let last_move = &ui_search.move_history[ui_search.move_history.len() - 1];
-                            println!(
-                                "👤 玩家走棋: {:?} 从 ({}, {}) 到 ({}, {})",
-                                last_move.chess,
-                                last_move.from.row,
-                                last_move.from.col,
-                                last_move.to.row,
-                                last_move.to.col
-                            );
-
-                            group.clear();
-                            chess_window.redraw();
-                            redraw_board(&mut group, &game, side);
-                            app::flush();
-
-                            // 同步检查开局库（避免昂贵的board clone）
-                            engine.board = game.clone();
-                            let sender = s.clone(); // Clone sender here to be available for both branches
-
-                            if let Some(book_move) = engine.get_book_move() {
-                                // 开局库有走法，直接使用
-                                println!("📖 使用开局库走法");
-                                sender.send(Message::AIMove(book_move));
-                            } else {
-                                // 需要搜索，启动后台线程
-                                let mut board_for_search = engine.board.clone();
-                                let thinking_flag = ai_thinking.clone();
-
-                                *thinking_flag.lock().unwrap() = true;
-
-                                rayon::spawn(move || {
-                                    println!("🤔 AI 开始搜索...");
-                                    let mut search_state = SearchState::new();
-                                    // 同步历史（可选，但对于搜索重复局面很重要）
-                                    // 这里简化为只传当前的 board
-                                    let (_value, search_move) =
-                                        search_state.iterative_deepening(&mut board_for_search, 6);
-
-                                    // 释放思考标志
-                                    *thinking_flag.lock().unwrap() = false;
-
-                                    // 发送结果回主线程
-                                    if let Some(m) = search_move {
-                                        sender.send(Message::AIMove(m));
-                                    }
-                                });
-                            }
-                        }
-                    }
-                }
-                Message::AIMove(ai_move) => {
-                    println!("✅ AI 思考完成");
-                    let side = *human_side.lock().unwrap();
-                    // 验证走法合法性
-                    if game.is_move_legal(&ai_move) {
-                        ui_search.push_move(&mut game, &ai_move);
-                        group.clear();
-                        chess_window.redraw();
-                        redraw_board(&mut group, &game, side);
+                    let (display_row, display_col) = if flipped {
+                        (BOARD_HEIGHT as usize - 1 - row, BOARD_WIDTH as usize - 1 - col)
                     } else {
-                        println!("❌ AI 生成了非法走法，撤销玩家走法");
-                        // 撤销玩家走法
-                        if let Some(player_move) = ui_search.move_history.last().cloned() {
-                            ui_search.pop_move(&mut game, &player_move);
-                            group.clear();
-                            chess_window.redraw();
-                            redraw_board(&mut group, &game, side);
-                        }
+                        (row, col)
+                    };
+
+                    let x = (display_col + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
+                    let y = (display_row + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
+                    let radius = (CHESS_SIZE / 2 - 4) as i32;
+                    let cx = x as i32 + radius + 4;
+                    let cy = y as i32 + radius + 4;
+
+                    // 绘制棋子底色（白色圆圈）
+                    draw::set_draw_color(Color::White);
+                    draw::draw_pie(cx - radius, cy - radius, radius * 2, radius * 2, 0.0, 360.0);
+
+                    // 绘制外边框（黑色圆圈）
+                    draw::set_line_style(draw::LineStyle::Solid, 1);
+                    draw::set_draw_color(Color::Black);
+                    draw::draw_arc(cx - radius, cy - radius, radius * 2, radius * 2, 0.0, 360.0);
+
+                    // 绘制文字
+                    if let Some(ct) = chess.chess_type() {
+                        let label = ct.name_value();
+                        let text_color = if let Some(Player::Red) = chess.player() {
+                            Color::Red
+                        } else {
+                            Color::Blue
+                        };
+                        draw::set_draw_color(text_color);
+                        draw::set_font(Font::HelveticaBold, 24);
+                        draw::draw_text2(label, cx - radius, cy - radius, radius * 2, radius * 2, Align::Center);
                     }
                 }
-                Message::Undo => {
-                    let side = *human_side.lock().unwrap();
-                    if game.turn == side {
-                        // A complete turn consists of the AI's move and the Player's move.
-                        // We must undo both to return to the previous state.
-                        if let Some(ai_move) = ui_search.move_history.last().cloned() {
-                            ui_search.pop_move(&mut game, &ai_move);
-                        }
-                        if let Some(player_move) = ui_search.move_history.last().cloned() {
-                            ui_search.pop_move(&mut game, &player_move);
-                        }
+            }
+        });
+        self.board_frame.redraw();
 
-                        game.select_pos = Position { row: -1, col: -1 }; // Reset selection
+        // 更新状态标签
+        let is_thinking = *self.ai_thinking.lock().unwrap();
+        let label = if is_thinking {
+            "AI 思考中...".to_string()
+        } else {
+            let turn_str = if self.game.turn == Player::Red {
+                "红方走"
+            } else {
+                "黑方走"
+            };
+            format!("轮到: {}", turn_str)
+        };
+        self.status_label.set_label(&label);
+        self.status_label.redraw();
+    }
 
-                        group.clear();
-                        chess_window.redraw();
-                        redraw_board(&mut group, &game, side);
-                    }
+    fn handle_click(&mut self, x: i32, y: i32) {
+        if *self.ai_thinking.lock().unwrap() {
+            println!("⏳ AI 正在思考中，请稍候...");
+            return;
+        }
+
+        let side = *self.human_side.lock().unwrap();
+        if self.game.turn != side {
+            return;
+        }
+
+        let history_len_before = self.ui_search.move_history.len();
+        self.game.click(&mut self.ui_search, (x, y));
+
+        // 无论是否走棋，都要重绘（为了显示选中效果）
+        self.redraw();
+
+        if self.ui_search.move_history.len() > history_len_before {
+            app::flush();
+            // 触发 AI
+            self.trigger_ai();
+        }
+    }
+
+    fn trigger_ai(&mut self) {
+        self.engine.board = self.game.clone();
+        let sender = self.sender.clone();
+
+        if let Some(book_move) = self.engine.get_book_move() {
+            println!("📖 使用开局库走法");
+            sender.send(Message::AIMove(book_move));
+        } else {
+            let mut board_for_search = self.game.clone();
+            let thinking_flag = self.ai_thinking.clone();
+            *thinking_flag.lock().unwrap() = true;
+
+            rayon::spawn(move || {
+                println!("🤔 AI 开始搜索...");
+                let mut search_state = SearchState::new();
+                let (_value, search_move) = search_state.iterative_deepening(&mut board_for_search, 6);
+                *thinking_flag.lock().unwrap() = false;
+                if let Some(m) = search_move {
+                    sender.send(Message::AIMove(m));
                 }
-                Message::NewGame(side) => {
-                    println!("🆕 开始新游戏，玩家方: {:?}", side);
-                    game = Board::init();
-                    ui_search = SearchState::new();
-                    {
-                        let mut side_lock = human_side.lock().unwrap();
-                        *side_lock = side;
+            });
+        }
+    }
+
+    fn run(&mut self) {
+        self.redraw();
+        while app::wait() {
+            if let Some(msg) = self.receiver.recv() {
+                match msg {
+                    Message::Click(x, y) => self.handle_click(x, y),
+                    Message::AIMove(ai_move) => {
+                        println!("✅ AI 思考完成");
+                        if self.game.is_move_legal(&ai_move) {
+                            self.ui_search.push_move(&mut self.game, &ai_move);
+                            self.redraw();
+                        } else {
+                            println!("❌ AI 生成了非法走法");
+                        }
                     }
-
-                    group.clear();
-                    chess_window.redraw();
-                    redraw_board(&mut group, &game, side);
-                    app::flush();
-
-                    // 如果玩家是黑方，则 AI (红方) 先走
-                    if side == Player::Black {
-                        let mut board_for_search = game.clone();
-                        let thinking_flag = ai_thinking.clone();
-                        let sender = s.clone();
-
-                        *thinking_flag.lock().unwrap() = true;
-                        rayon::spawn(move || {
-                            println!("🤔 AI (红方) 开始搜索...");
-                            let mut search_state = SearchState::new();
-                            let (_value, search_move) = search_state.iterative_deepening(&mut board_for_search, 6);
-
-                            *thinking_flag.lock().unwrap() = false;
-
-                            if let Some(m) = search_move {
-                                sender.send(Message::AIMove(m));
+                    Message::Undo => {
+                        let side = *self.human_side.lock().unwrap();
+                        if self.game.turn == side {
+                            if let Some(ai_move) = self.ui_search.move_history.last().cloned() {
+                                self.ui_search.pop_move(&mut self.game, &ai_move);
                             }
-                        });
+                            if let Some(player_move) = self.ui_search.move_history.last().cloned() {
+                                self.ui_search
+                                    .pop_move(&mut self.game, &player_move);
+                            }
+                            self.game.select_pos = Position { row: -1, col: -1 };
+                            self.redraw();
+                        }
+                    }
+                    Message::NewGame(side) => {
+                        println!("🆕 开始新游戏，玩家方: {:?}", side);
+                        self.game = Board::init();
+                        self.ui_search = SearchState::new();
+                        *self.human_side.lock().unwrap() = side;
+                        self.redraw();
+                        app::flush();
+                        if side == Player::Black {
+                            self.trigger_ai();
+                        }
                     }
                 }
             }
         }
     }
+}
+
+pub fn ui(game: Board, engine: UCCIEngine) -> anyhow::Result<()> {
+    let mut chess_app = ChessApp::new(game, engine);
+    chess_app.run();
     Ok(())
 }
 
