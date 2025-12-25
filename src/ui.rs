@@ -35,16 +35,19 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
         .with_pos(pand, pand)
         .with_size(CHESS_BOARD_WIDTH + 120, CHESS_BOARD_HEIGHT);
 
+    #[derive(Debug, Clone, Copy)]
     enum Message {
         Click(i32, i32),
         Undo,
-        AIMove(Move), // AI 计算完成，返回走法
+        AIMove(Move),    // AI 计算完成，返回走法
+        NewGame(Player), // 重新开始，设置先手/后手
     }
 
     let (s, r) = app::channel::<Message>();
 
     // AI 是否正在思考
     let ai_thinking = Arc::new(Mutex::new(false));
+    let human_side = Arc::new(Mutex::new(Player::Red));
 
     {
         // 画棋盘
@@ -59,20 +62,31 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
     let mut group = Group::default_fill();
     flex.fixed(&group, CHESS_BOARD_WIDTH);
 
-    fn redrawn(group: &mut Group, game: &Board) {
-        for x in 0..BOARD_WIDTH as usize {
-            for y in 0..BOARD_HEIGHT as usize {
-                let chess = game.chesses[y][x];
+    fn redraw_board(group: &mut Group, game: &Board, human_side: Player) {
+        let flipped = human_side == Player::Black;
+        for actual_x in 0..BOARD_WIDTH as usize {
+            for actual_y in 0..BOARD_HEIGHT as usize {
+                let chess = game.chesses[actual_y][actual_x];
 
                 let title = match chess.chess_type() {
                     Some(t) => t.name_value(),
                     None => continue,
                 };
 
-                let selected_chess = game.select_pos == (x as i32, y as i32).into();
+                let selected_chess = game.select_pos == (actual_x as i32, actual_y as i32).into();
 
-                let x = (x + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
-                let y = (y + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
+                // 转换显示坐标：如果是黑方，则视角翻转（黑方在下）
+                let (display_x, display_y) = if flipped {
+                    (
+                        BOARD_WIDTH as usize - 1 - actual_x,
+                        BOARD_HEIGHT as usize - 1 - actual_y,
+                    )
+                } else {
+                    (actual_x, actual_y)
+                };
+
+                let x = (display_x + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
+                let y = (display_y + 1) * CHESS_SIZE - CHESS_SIZE / 2 - 24;
                 let padding = 4;
                 let mut button = Button::new(
                     (x + padding) as i32,
@@ -99,16 +113,21 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
         }
     }
 
-    redrawn(&mut group, &game);
+    redraw_board(&mut group, &game, *human_side.lock().unwrap());
 
     chess_window.handle({
+        let human_side = human_side.clone();
         move |_, event| {
             if let Event::Push = event {
                 let (click_x, click_y) = app::event_coords();
                 if click_x > CHESS_BOARD_WIDTH {
                     return false; // Let button callbacks handle it
                 }
-                let (x, y) = (click_x / CHESS_SIZE as i32, click_y / CHESS_SIZE as i32);
+                let (mut x, mut y) = (click_x / CHESS_SIZE as i32, click_y / CHESS_SIZE as i32);
+                if *human_side.lock().unwrap() == Player::Black {
+                    x = BOARD_WIDTH - 1 - x;
+                    y = BOARD_HEIGHT - 1 - y;
+                }
                 s.send(Message::Click(x, y));
                 return true;
             }
@@ -120,18 +139,64 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
     vpack.set_spacing(10);
     flex.add(&vpack);
 
-    let mut undo_button = Button::default().with_label("悔棋");
+    let mut side_btn = Button::default()
+        .with_size(100, 40)
+        .with_label(if *human_side.lock().unwrap() == Player::Red {
+            "执红 (先手)"
+        } else {
+            "执黑 (后手)"
+        });
+    side_btn.set_color(Color::from_rgb(240, 240, 240));
+    side_btn.set_frame(FrameType::RoundedBox);
+    side_btn.set_callback({
+        let s = s.clone();
+        let human_side = human_side.clone();
+        move |b| {
+            let mut side_lock = human_side.lock().unwrap();
+            *side_lock = side_lock.next();
+            let side = *side_lock;
+            b.set_label(if side == Player::Red {
+                "执红 (先手)"
+            } else {
+                "执黑 (后手)"
+            });
+            s.send(Message::NewGame(side));
+        }
+    });
+    vpack.add(&side_btn);
+
+    let mut restart_button = Button::default()
+        .with_size(100, 40)
+        .with_label("重新开始");
+    restart_button.set_color(Color::from_rgb(230, 230, 255));
+    restart_button.set_frame(FrameType::RoundedBox);
+    restart_button.set_callback({
+        let s = s.clone();
+        let side_btn = side_btn.clone();
+        move |_| {
+            let side = if side_btn.label() == "执红 (先手)" {
+                Player::Red
+            } else {
+                Player::Black
+            };
+            s.send(Message::NewGame(side));
+        }
+    });
+    vpack.add(&restart_button);
+
+    let mut undo_button = Button::default()
+        .with_size(100, 40)
+        .with_label("悔棋");
+    undo_button.set_color(Color::from_rgb(255, 240, 240));
+    undo_button.set_frame(FrameType::RoundedBox);
     undo_button.set_callback({
+        let s = s.clone();
         move |_| {
             s.send(Message::Undo);
         }
     });
     vpack.add(&undo_button);
 
-    Button::default().with_label("功能");
-    Button::default().with_label("功能");
-    Button::default().with_label("功能");
-    Button::default().with_label("功能");
     vpack.end();
     vpack.auto_layout();
     flex.fixed(&Group::default().with_size(10, 10), 10);
@@ -150,7 +215,8 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
                         continue;
                     }
 
-                    if current_turn == Player::Red {
+                    let side = *human_side.lock().unwrap();
+                    if current_turn == side {
                         let history_len_before = ui_search.move_history.len();
                         game.click(&mut ui_search, (x, y));
                         if ui_search.move_history.len() > history_len_before {
@@ -167,7 +233,7 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
 
                             group.clear();
                             chess_window.redraw();
-                            redrawn(&mut group, &game);
+                            redraw_board(&mut group, &game, side);
                             app::flush();
 
                             // 同步检查开局库（避免昂贵的board clone）
@@ -207,12 +273,13 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
                 }
                 Message::AIMove(ai_move) => {
                     println!("✅ AI 思考完成");
+                    let side = *human_side.lock().unwrap();
                     // 验证走法合法性
                     if game.is_move_legal(&ai_move) {
                         ui_search.push_move(&mut game, &ai_move);
                         group.clear();
                         chess_window.redraw();
-                        redrawn(&mut group, &game);
+                        redraw_board(&mut group, &game, side);
                     } else {
                         println!("❌ AI 生成了非法走法，撤销玩家走法");
                         // 撤销玩家走法
@@ -220,12 +287,13 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
                             ui_search.pop_move(&mut game, &player_move);
                             group.clear();
                             chess_window.redraw();
-                            redrawn(&mut group, &game);
+                            redraw_board(&mut group, &game, side);
                         }
                     }
                 }
                 Message::Undo => {
-                    if game.turn == Player::Red {
+                    let side = *human_side.lock().unwrap();
+                    if game.turn == side {
                         // A complete turn consists of the AI's move and the Player's move.
                         // We must undo both to return to the previous state.
                         if let Some(ai_move) = ui_search.move_history.last().cloned() {
@@ -239,7 +307,41 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
 
                         group.clear();
                         chess_window.redraw();
-                        redrawn(&mut group, &game);
+                        redraw_board(&mut group, &game, side);
+                    }
+                }
+                Message::NewGame(side) => {
+                    println!("🆕 开始新游戏，玩家方: {:?}", side);
+                    game = Board::init();
+                    ui_search = SearchState::new();
+                    {
+                        let mut side_lock = human_side.lock().unwrap();
+                        *side_lock = side;
+                    }
+
+                    group.clear();
+                    chess_window.redraw();
+                    redraw_board(&mut group, &game, side);
+                    app::flush();
+
+                    // 如果玩家是黑方，则 AI (红方) 先走
+                    if side == Player::Black {
+                        let mut board_for_search = game.clone();
+                        let thinking_flag = ai_thinking.clone();
+                        let sender = s.clone();
+
+                        *thinking_flag.lock().unwrap() = true;
+                        rayon::spawn(move || {
+                            println!("🤔 AI (红方) 开始搜索...");
+                            let mut search_state = SearchState::new();
+                            let (_value, search_move) = search_state.iterative_deepening(&mut board_for_search, 6);
+
+                            *thinking_flag.lock().unwrap() = false;
+
+                            if let Some(m) = search_move {
+                                sender.send(Message::AIMove(m));
+                            }
+                        });
                     }
                 }
             }
