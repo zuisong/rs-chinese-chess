@@ -251,6 +251,12 @@ pub struct Board {
     pub zobrist_value_lock: u64,
     pub distance: i32,
     pub select_pos: Position,
+    // 杀手走法表：每层深度保存2个最佳走法
+    pub killer_table: Vec<[Option<Move>; 2]>,
+    // 历史启发表：记录每个走法的历史得分
+    // 索引：from_square_index * 90 + to_square_index
+    // 总共 90 * 90 = 8100 种可能的走法
+    pub history_table: Vec<i32>,
 }
 
 // 棋子是否在棋盘内
@@ -489,11 +495,16 @@ impl Board {
             gen_counter: 0,
             move_history: vec![],
             best_moves_last: vec![],
-            records: vec![],
+            records: vec![None; RECORD_SIZE as usize],
             zobrist_value: 0,
             zobrist_value_lock: 0,
             distance: 0,
             select_pos: Position { row: 1, col: 1 },
+            // 初始化杀手走法表：每层深度2个空走法
+            killer_table: vec![[None, None]; MAX_DEPTH as usize],
+            // 初始化历史启发表：所有位置初始化为0
+            // 90个格子 * 90个格子 = 8100 种可能的走法
+            history_table: vec![0; 90 * 90],
         };
         board.zobrist_value = ZOBRIST_TABLE.calc_chesses(&board.chesses);
         board.zobrist_value_lock = ZOBRIST_TABLE_LOCK.calc_chesses(&board.chesses);
@@ -507,11 +518,13 @@ impl Board {
             gen_counter: 0,
             move_history: vec![],
             best_moves_last: vec![],
-            records: vec![],
+            records: vec![None; RECORD_SIZE as usize],
             zobrist_value: 0,
             zobrist_value_lock: 0,
             distance: 0,
             select_pos: Position { row: 1, col: 1 },
+            killer_table: vec![[None, None]; MAX_DEPTH as usize],
+            history_table: vec![0; 90 * 90],
         }
     }
     pub fn from_fen(fen: &str) -> Self {
@@ -569,6 +582,39 @@ impl Board {
         self.turn = m.player;
         self.distance -= 1;
         self.move_history.pop();
+    }
+
+    // 执行空着 (Null Move)：只交换走棋方
+    pub fn do_null_move(&mut self) {
+        self.turn = self.turn.next();
+        self.distance += 1;
+    }
+
+    // 撤销空着
+    pub fn undo_null_move(&mut self) {
+        self.turn = self.turn.next();
+        self.distance -= 1;
+    }
+
+    // 判断当前局面是否适合使用 null move
+    // 当己方子力足够时才使用 (避免残局中误判)
+    fn null_move_okay(&self) -> bool {
+        // 简单检查：至少有一个车或炮
+        for row in 0..BOARD_HEIGHT {
+            for col in 0..BOARD_WIDTH {
+                let chess = self.chesses[row as usize][col as usize];
+                if let Some(player) = chess.player() {
+                    if player == self.turn {
+                        if let Some(ct) = chess.chess_type() {
+                            if ct == ChessType::Rook || ct == ChessType::Cannon {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
     pub fn chess_at(&self, pos: Position) -> Chess {
         if in_board(pos) {
@@ -1113,83 +1159,228 @@ impl Board {
             self.records[(self.zobrist_value & (RECORD_SIZE - 1) as u64) as usize] = Some(record);
         }
     }
+
+    // 计算走法的历史启发索引
+    // 基于起点和终点位置
+    // 棋盘是 10x9 的，所以总共 90 个格子
+    // 每个起点-终点对应一个索引：from_index * 90 + to_index
+    fn history_index(&self, mv: &Move) -> usize {
+        let from_idx = (mv.from.row * 9 + mv.from.col) as usize;
+        let to_idx = (mv.to.row * 9 + mv.to.col) as usize;
+        from_idx * 90 + to_idx
+    }
+
+    // 更新杀手走法表
+    // 当找到一个好的走法时调用
+    fn update_killer_move(&mut self, mv: &Move, depth: usize) {
+        if depth >= self.killer_table.len() {
+            return;
+        }
+        // 如果不是第一个杀手走法，则更新
+        if let Some(killer1) = &self.killer_table[depth][0] {
+            if killer1 != mv {
+                self.killer_table[depth][1] = self.killer_table[depth][0].clone();
+                self.killer_table[depth][0] = Some(mv.clone());
+            }
+        } else {
+            self.killer_table[depth][0] = Some(mv.clone());
+        }
+    }
+
+    // 更新历史启发表
+    // depth^2 作为奖励，深度越大越重要
+    fn update_history(&mut self, mv: &Move, depth: i32) {
+        let idx = self.history_index(mv);
+        if idx < self.history_table.len() {
+            self.history_table[idx] += depth * depth;
+        }
+    }
+
+    // 获取走法的历史得分
+    fn get_history_score(&self, mv: &Move) -> i32 {
+        let idx = self.history_index(mv);
+        if idx < self.history_table.len() {
+            self.history_table[idx]
+        } else {
+            0
+        }
+    }
+
+    // 改进的走法排序
+    // 排序优先级：Hash Move > Killer Move > MVV/LVA > History Heuristic
+    fn sort_moves(&self, moves: &mut Vec<Move>, hash_move: Option<&Move>) {
+        let depth = self.distance as usize;
+        let killer1 = if depth < self.killer_table.len() {
+            self.killer_table[depth][0].as_ref()
+        } else {
+            None
+        };
+        let killer2 = if depth < self.killer_table.len() {
+            self.killer_table[depth][1].as_ref()
+        } else {
+            None
+        };
+
+        // 为每个走法计算排序分数
+        let mut move_scores: Vec<(Move, i32)> = moves
+            .iter()
+            .map(|mv| {
+                let mut score = 0;
+
+                // 最高优先级：Hash Move
+                if let Some(hm) = hash_move {
+                    if mv == hm {
+                        return (mv.clone(), i32::MAX);
+                    }
+                }
+
+                // 杀手走法
+                if let Some(k1) = killer1 {
+                    if mv == k1 {
+                        return (mv.clone(), i32::MAX - 1);
+                    }
+                }
+                if let Some(k2) = killer2 {
+                    if mv == k2 {
+                        return (mv.clone(), i32::MAX - 2);
+                    }
+                }
+
+                // MVV/LVA (Most Valuable Victim / Least Valuable Aggressor)
+                // 吃子走法优先，吃价值高的子且用价值低的子吃
+                if mv.capture != Chess::None {
+                    score += mv.capture.value() * 10 - mv.chess.value();
+                }
+
+                // 历史启发分数
+                score += self.get_history_score(mv);
+
+                (mv.clone(), score)
+            })
+            .collect();
+
+        // 按分数降序排序
+        move_scores.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // 更新原 moves 向量
+        *moves = move_scores.into_iter().map(|(mv, _)| mv).collect();
+    }
     // Alpha-Beta 搜索与 PV 倍增（主搜索函数）
     // 参数 depth: 搜索深度
     // 参数 alpha: Alpha 值（下界）
     // 参数 beta: Beta 值（上界）
+    // 参数 allow_null: 是否允许 null move pruning
     // 返回: (评估分数, 最佳走子)
-    pub fn alpha_beta_pvs(&mut self, depth: i32, mut alpha: i32, beta: i32) -> (i32, Option<Move>) {
-        // if let Some(record) = self.find_record() {
-        //     if record.depth <= depth {
-        //         return (record.value, record.best_move);
-        //     }
-        // }
+    fn alpha_beta_pvs_internal(&mut self, depth: i32, mut alpha: i32, beta: i32, allow_null: bool) -> (i32, Option<Move>) {
+        // 尝试从置换表获取结果
+        let hash_move = if let Some(record) = self.find_record() {
+            if record.depth <= depth {
+                return (record.value, record.best_move);
+            }
+            record.best_move
+        } else {
+            None
+        };
+
         if depth == 0 {
             self.counter += 1;
             return (self.quies(alpha, beta), None);
         }
-        let mut count = 0; // 记录尝试了多少种着法
 
-        // 优先尝试迭代深度搜索的上一层搜索结果
-        let mut moves = self.generate_move(false);
-        // 如果符合上次搜索的着法线路，那么优先按此线路搜索下去
-        for (i, m) in self.best_moves_last.iter().enumerate() {
-            if let Some(ml) = self.move_history.get(i) {
-                if m != ml {
-                    break;
-                }
-            } else {
-                moves.insert(0, m.clone());
-                break;
+        // Null Move Pruning
+        // 当不在被将军状态，且允许 null move，且局面适合时尝试
+        const NULL_MOVE_REDUCTION: i32 = 2;
+        if allow_null && depth >= 3 && !self.is_checked(self.turn) && self.null_move_okay() {
+            self.do_null_move();
+            let (v, _) = self.alpha_beta_pvs_internal(depth - NULL_MOVE_REDUCTION - 1, -beta, -beta + 1, false);
+            self.undo_null_move();
+            if -v >= beta {
+                return (beta, None); // Fail-high cutoff
             }
         }
+
+        let mut count = 0; // 记录尝试了多少种着法
+
+        // 生成所有走法
+        let mut moves = self.generate_move(false);
+
+        // 使用改进的走法排序
+        self.sort_moves(&mut moves, hash_move.as_ref());
+
         let mut best_move = None;
-        for m in moves {
+        let mut best_value = MIN;
+
+        for (i, m) in moves.iter().enumerate() {
             self.do_move(&m);
             if self.is_checked(self.turn.next()) {
                 self.undo_move(&m);
                 continue;
             }
-            count = count + 1;
-            // 先使用0宽窗口进行搜索
-            let (v, bmt) = self.alpha_beta_pvs(depth - 1, -(alpha + 1), -alpha);
+            count += 1;
 
-            let mut best_value = -v;
-            let mut bm = bmt;
-            if best_value == MIN || (best_value > alpha && best_value < beta) {
-                let (v, bmt) = self.alpha_beta_pvs(depth - 1, -beta, -alpha);
-                // self.add_record(Record {
-                //     value: -v,
-                //     depth,
-                //     best_move: bmt.clone(),
-                //     zobrist_lock: self.zobrist_value_lock,
-                //     turn: self.turn,
-                // });
-                best_value = -v;
-                bm = bmt;
-            }
-
-            // let (v, bmt) = self.alpha_beta(depth - 1, -beta, -alpha);
-            // let mut best_value = -v;
-            // let mut bm = bmt;
-
-            if best_value >= beta {
-                self.undo_move(&m);
-                return (best_value, None);
-            }
-            if best_value > alpha {
-                alpha = best_value;
-                best_move = Some(m.clone());
-            }
+            let v = if i == 0 {
+                // 第一个走法用全窗口搜索
+                -self.alpha_beta_pvs_internal(depth - 1, -beta, -alpha, true).0
+            } else {
+                // 后续走法先用 null-window 搜索
+                let scout = -self.alpha_beta_pvs_internal(depth - 1, -(alpha + 1), -alpha, false).0;
+                if scout > alpha && scout < beta {
+                    // 如果在窗口内，重新用全窗口搜索
+                    -self.alpha_beta_pvs_internal(depth - 1, -beta, -alpha, true).0
+                } else {
+                    scout
+                }
+            };
 
             self.undo_move(&m);
+
+            if v > best_value {
+                best_value = v;
+                if v >= beta {
+                    // Beta 截断：更新 killer moves 和 history
+                    self.update_killer_move(&m, self.distance as usize);
+                    self.update_history(&m, depth);
+                    // 保存到置换表
+                    self.add_record(Record {
+                        value: v,
+                        depth,
+                        best_move: Some(m.clone()),
+                        zobrist_lock: self.zobrist_value_lock,
+                        turn: self.turn,
+                    });
+                    return (v, Some(m.clone()));
+                }
+                if v > alpha {
+                    alpha = v;
+                    best_move = Some(m.clone());
+                }
+            }
         }
 
         // 如果尝试的着法数为0,说明已经被绝杀
-        // 深度减分，深度越小，说明越早被将死，局面分应该越低，由于depth是递减的，
-        // 所以深度越小，depth越大，减去depth的局面分就越低
-        return (if count == 0 { KILL - depth } else { alpha }, best_move);
+        if count == 0 {
+            return (KILL - depth, None);
+        }
+
+        // 保存到置换表
+        if best_move.is_some() {
+            self.add_record(Record {
+                value: best_value,
+                depth,
+                best_move: best_move.clone(),
+                zobrist_lock: self.zobrist_value_lock,
+                turn: self.turn,
+            });
+        }
+
+        (best_value, best_move)
     }
+
+    // 公共接口：Alpha-Beta 搜索入口
+    pub fn alpha_beta_pvs(&mut self, depth: i32, alpha: i32, beta: i32) -> (i32, Option<Move>) {
+        self.alpha_beta_pvs_internal(depth, alpha, beta, true)
+    }
+
     // 静态搜索（Quiescence Search），处理吃子序列
     // 参数 alpha: Alpha 值
     // 参数 beta: Beta 值
