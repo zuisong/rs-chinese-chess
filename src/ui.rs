@@ -9,6 +9,7 @@ use fltk::{
     prelude::*,
     window::*,
 };
+use std::sync::{Arc, Mutex};
 
 const CHESS_SIZE: usize = 57;
 const CHESS_BOARD_WIDTH: i32 = 521;
@@ -32,9 +33,13 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
     enum Message {
         Click(i32, i32),
         Undo,
+        AIMove(Move), // AI 计算完成，返回走法
     }
 
     let (s, r) = app::channel::<Message>();
+
+    // AI 是否正在思考
+    let ai_thinking = Arc::new(Mutex::new(false));
 
     {
         // 画棋盘
@@ -134,6 +139,12 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
             match msg {
                 Message::Click(x, y) => {
                     let current_turn = game.turn;
+                    // 检查是否 AI 正在思考
+                    if *ai_thinking.lock().unwrap() {
+                        println!("⏳ AI 正在思考中，请稍候...");
+                        continue;
+                    }
+
                     if current_turn == Player::Red {
                         let history_len_before = game.move_history.len();
                         game.click((x, y));
@@ -144,12 +155,42 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
                             redrawn(&mut group, &game);
                             app::flush();
 
-                            if !game.robot_move() {
-                                // AI failed to move. Revert player's move to un-stick the game.
-                                if let Some(player_move) = game.move_history.last().cloned() {
-                                    game.undo_move(&player_move);
+                            // 启动 AI 异步思考
+                            let mut board_clone = game.clone();
+                            let thinking_flag = ai_thinking.clone();
+                            let sender = s.clone();
+
+                            *thinking_flag.lock().unwrap() = true;
+                            println!("🤔 AI 开始思考...");
+
+                            rayon::spawn(move || {
+                                // 在后台线程执行搜索
+                                let (_value, best_move) = board_clone.iterative_deepening(10);
+
+                                // 释放思考标志
+                                *thinking_flag.lock().unwrap() = false;
+
+                                // 发送结果回主线程
+                                if let Some(m) = best_move {
+                                    sender.send(Message::AIMove(m));
                                 }
-                            }
+                            });
+                        }
+                    }
+                }
+                Message::AIMove(ai_move) => {
+                    println!("✅ AI 思考完成");
+                    // 验证走法合法性
+                    if game.is_move_legal(&ai_move) {
+                        game.do_move(&ai_move);
+                        group.clear();
+                        chess_window.redraw();
+                        redrawn(&mut group, &game);
+                    } else {
+                        println!("❌ AI 生成了非法走法，撤销玩家走法");
+                        // 撤销玩家走法
+                        if let Some(player_move) = game.move_history.last().cloned() {
+                            game.undo_move(&player_move);
                             group.clear();
                             chess_window.redraw();
                             redrawn(&mut group, &game);
@@ -188,8 +229,6 @@ trait BoardExt {
         from: Position, // 起手位置
         to: Position,   // 落子位置
     );
-
-    fn robot_move(&mut self) -> bool;
 }
 
 impl BoardExt for Board {
@@ -198,24 +237,6 @@ impl BoardExt for Board {
         if !selected && self.chess_at(self.select_pos).player() == Some(self.turn) {
             self.move_to(self.select_pos, pos.into());
         }
-    }
-    fn robot_move(&mut self) -> bool {
-        if self.turn == Player::Red {
-            return false;
-        }
-
-        let (_value, best_move) = self.iterative_deepening(3);
-        if let Some(m) = best_move {
-            if self.is_move_legal(&m) {
-                self.do_move(&m);
-                return true;
-            } else {
-                println!("AI generated an illegal move, not moving: {:?}", m);
-                return false;
-            }
-        }
-        println!("AI found no move.");
-        false
     }
 
     fn select(&mut self, pos: (i32, i32)) -> bool {
