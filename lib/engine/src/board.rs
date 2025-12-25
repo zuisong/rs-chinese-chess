@@ -600,6 +600,7 @@ impl Board {
         board.update_initial_values();
         board
     }
+
     // 应用走子到棋盘，但不更新历史记录（用于临时模拟）
     // 参数 m: 要应用的走子
     pub fn apply_move(&mut self, m: &Move) {

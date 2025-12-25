@@ -1,4 +1,7 @@
-use engine::board::{BOARD_HEIGHT, BOARD_WIDTH, Board, Move, Player, Position};
+use engine::{
+    board::{BOARD_HEIGHT, BOARD_WIDTH, Board, Move, Player, Position},
+    engine::UCCIEngine,
+};
 use fltk::{
     app,
     button::Button,
@@ -15,7 +18,7 @@ const CHESS_SIZE: usize = 57;
 const CHESS_BOARD_WIDTH: i32 = 521;
 const CHESS_BOARD_HEIGHT: i32 = 577;
 
-pub fn ui(mut game: Board) -> anyhow::Result<()> {
+pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
     let app = app::App::default();
     let pand = 1;
     let mut top_window = Window::new(
@@ -165,26 +168,34 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
                             redrawn(&mut group, &game);
                             app::flush();
 
-                            // 启动 AI 异步思考
-                            let mut board_clone = game.clone();
-                            let thinking_flag = ai_thinking.clone();
-                            let sender = s.clone();
+                            // 同步检查开局库（避免昂贵的board clone）
+                            engine.board = game.clone();
+                            let sender = s.clone(); // Clone sender here to be available for both branches
 
-                            *thinking_flag.lock().unwrap() = true;
-                            println!("🤔 AI 开始思考...");
+                            if let Some(book_move) = engine.get_book_move() {
+                                // 开局库有走法，直接使用
+                                println!("📖 使用开局库走法");
+                                sender.send(Message::AIMove(book_move));
+                            } else {
+                                // 需要搜索，启动后台线程
+                                let mut board_for_search = engine.board.clone();
+                                let thinking_flag = ai_thinking.clone();
 
-                            rayon::spawn(move || {
-                                // 在后台线程执行搜索
-                                let (_value, best_move) = board_clone.iterative_deepening(6);
+                                *thinking_flag.lock().unwrap() = true;
 
-                                // 释放思考标志
-                                *thinking_flag.lock().unwrap() = false;
+                                rayon::spawn(move || {
+                                    println!("🤔 AI 开始搜索...");
+                                    let (_value, search_move) = board_for_search.iterative_deepening(6);
 
-                                // 发送结果回主线程
-                                if let Some(m) = best_move {
-                                    sender.send(Message::AIMove(m));
-                                }
-                            });
+                                    // 释放思考标志
+                                    *thinking_flag.lock().unwrap() = false;
+
+                                    // 发送结果回主线程
+                                    if let Some(m) = search_move {
+                                        sender.send(Message::AIMove(m));
+                                    }
+                                });
+                            }
                         }
                     }
                 }

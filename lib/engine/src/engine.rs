@@ -18,36 +18,94 @@ pub struct UCCIEngine {
 }
 
 impl UCCIEngine {
+    /// Ultra-lightweight FEN parser for opening book loading
+    /// Returns (zobrist_value, zobrist_value_lock) without creating Board object
+    fn parse_fen_for_zobrist(fen: &str) -> Option<(u64, u64)> {
+        use crate::board::{Chess, Player};
+        use crate::constant::{FEN_MAP, ZOBRIST_TABLE, ZOBRIST_TABLE_LOCK};
+
+        let mut chesses = [[Chess::None; 9]; 10];
+        let mut parts = fen.split(" ");
+        let pos = parts.next()?;
+
+        let mut i = 0;
+        for row in pos.split("/") {
+            let mut j = 0;
+            for col in row.chars() {
+                if col.is_numeric() {
+                    j += col.to_digit(10)? as i32;
+                } else {
+                    if let Some(chess) = FEN_MAP.get(&col) {
+                        if i < 10 && j < 9 {
+                            chesses[i as usize][j as usize] = *chess;
+                        }
+                    }
+                    j += 1;
+                }
+            }
+            i += 1;
+        }
+
+        let turn = parts.next()?;
+        let player = if turn == "b" { Player::Black } else { Player::Red };
+
+        let zobrist_value = ZOBRIST_TABLE.calc_chesses(&chesses, player);
+        let zobrist_value_lock = ZOBRIST_TABLE_LOCK.calc_chesses(&chesses, player);
+
+        Some((zobrist_value, zobrist_value_lock))
+    }
     pub fn new(book_data: Option<&str>) -> Self {
         let mut book = vec![];
+
         if let Some(data) = book_data {
-            for line in data
+            use std::time::Instant;
+
+            let start = Instant::now();
+            println!("⏳ 开始解析开局库...");
+
+            // 使用简单迭代器处理每一行（已经足够快）
+            book = data
                 .lines()
-                .map(|it| it.trim())
+                .map(|line| line.trim())
                 .filter(|it| !it.is_empty())
-            {
-                let mut tokens = line.splitn(3, " ");
-                let m = tokens.next().unwrap();
-                let weight = tokens.next().unwrap();
-                let fen = tokens.next().unwrap();
-                let board = Board::from_fen(fen);
-                book.push(PreLoad {
-                    zobrist_value: board.zobrist_value,
-                    zobrist_value_check: board.zobrist_value_lock,
-                    best_move: m.to_owned(),
-                    weight: weight.parse::<i32>().unwrap(),
-                });
-            }
-            book.sort_by(|a, b| a.zobrist_value.cmp(&b.zobrist_value));
-            println!("加载开局库完成，共加载{}个局面", book.len());
-            println!("{:?}", book[1000]);
+                .filter_map(|line| {
+                    let mut tokens = line.splitn(3, " ");
+                    let m = tokens.next()?;
+                    let weight = tokens.next()?;
+                    let fen = tokens.next()?;
+
+                    let (zobrist_value, zobrist_value_check) = Self::parse_fen_for_zobrist(fen)?;
+
+                    Some(PreLoad {
+                        zobrist_value,
+                        zobrist_value_check,
+                        best_move: m.to_owned(),
+                        weight: weight.parse::<i32>().ok()?,
+                    })
+                })
+                .collect();
+
+            // 排序
+            book.sort_unstable_by(|a, b| a.zobrist_value.cmp(&b.zobrist_value));
+
+            let elapsed = start.elapsed();
+            println!(
+                "✅ 开局库加载完成，共加载{}个局面，耗时 {:.2}秒",
+                book.len(),
+                elapsed.as_secs_f64()
+            );
         }
+
         UCCIEngine {
             board: Board::init(),
             book,
         }
     }
     pub fn search_in_book(&self) -> Option<String> {
+        if self.book.is_empty() {
+            return None;
+        }
+
         let candidates = self
             .book
             .binary_search_by(|probe| probe.zobrist_value.cmp(&self.board.zobrist_value))
@@ -55,6 +113,7 @@ impl UCCIEngine {
             .into_iter()
             .filter(|x| x.zobrist_value_check == self.board.zobrist_value_lock)
             .collect::<Vec<&PreLoad>>();
+
         if candidates.len() > 0 {
             let mut buf = [0; 4];
             fastrand::fill(&mut buf);
@@ -63,6 +122,39 @@ impl UCCIEngine {
         } else {
             None
         }
+    }
+
+    /// Get opening book move for current board position
+    /// Returns None if no book move is available
+    pub fn get_book_move(&self) -> Option<Move> {
+        self.search_in_book()
+            .and_then(|move_str| self.parse_move_string(&move_str))
+    }
+
+    /// Parse a move string like "b0c2" into a Move struct
+    fn parse_move_string(&self, move_str: &str) -> Option<Move> {
+        if move_str.len() != 4 {
+            return None;
+        }
+
+        let (from_str, to_str) = move_str.split_at(2);
+        let from: Position = from_str.into();
+        let to: Position = to_str.into();
+
+        let m = Move {
+            player: self.board.turn,
+            from,
+            to,
+            chess: self.board.chess_at(from),
+            capture: self.board.chess_at(to),
+        };
+
+        if self.board.is_move_legal(&m) { Some(m) } else { None }
+    }
+
+    /// Check if opening book has a move for current position
+    pub fn has_book_move(&self) -> bool {
+        self.search_in_book().is_some()
     }
 
     pub fn start(&mut self) {

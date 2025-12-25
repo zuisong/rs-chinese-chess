@@ -9,6 +9,7 @@ bytes = "1.9.0"
 fltk = {version = "1.5.1", features = ["fltk-bundled"]}
 engine = { path = "./lib/engine" }
 rayon = "1.11.0"
+mimalloc = "0.1.48"
 
 
 [profile.release]
