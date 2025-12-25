@@ -1,6 +1,7 @@
 use engine::{
     board::{BOARD_HEIGHT, BOARD_WIDTH, Board, Move, Player, Position},
     engine::UCCIEngine,
+    search::SearchState,
 };
 use fltk::{
     app,
@@ -19,6 +20,7 @@ const CHESS_BOARD_WIDTH: i32 = 521;
 const CHESS_BOARD_HEIGHT: i32 = 577;
 
 pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
+    let mut ui_search = SearchState::new();
     let app = app::App::default();
     let pand = 1;
     let mut top_window = Window::new(
@@ -149,11 +151,11 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
                     }
 
                     if current_turn == Player::Red {
-                        let history_len_before = game.move_history.len();
-                        game.click((x, y));
-                        if game.move_history.len() > history_len_before {
+                        let history_len_before = ui_search.move_history.len();
+                        game.click(&mut ui_search, (x, y));
+                        if ui_search.move_history.len() > history_len_before {
                             // A move was made
-                            let last_move = &game.move_history[game.move_history.len() - 1];
+                            let last_move = &ui_search.move_history[ui_search.move_history.len() - 1];
                             println!(
                                 "👤 玩家走棋: {:?} 从 ({}, {}) 到 ({}, {})",
                                 last_move.chess,
@@ -185,7 +187,11 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
 
                                 rayon::spawn(move || {
                                     println!("🤔 AI 开始搜索...");
-                                    let (_value, search_move) = board_for_search.iterative_deepening(6);
+                                    let mut search_state = SearchState::new();
+                                    // 同步历史（可选，但对于搜索重复局面很重要）
+                                    // 这里简化为只传当前的 board
+                                    let (_value, search_move) =
+                                        search_state.iterative_deepening(&mut board_for_search, 6);
 
                                     // 释放思考标志
                                     *thinking_flag.lock().unwrap() = false;
@@ -203,15 +209,15 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
                     println!("✅ AI 思考完成");
                     // 验证走法合法性
                     if game.is_move_legal(&ai_move) {
-                        game.do_move(&ai_move);
+                        ui_search.push_move(&mut game, &ai_move);
                         group.clear();
                         chess_window.redraw();
                         redrawn(&mut group, &game);
                     } else {
                         println!("❌ AI 生成了非法走法，撤销玩家走法");
                         // 撤销玩家走法
-                        if let Some(player_move) = game.move_history.last().cloned() {
-                            game.undo_move(&player_move);
+                        if let Some(player_move) = ui_search.move_history.last().cloned() {
+                            ui_search.pop_move(&mut game, &player_move);
                             group.clear();
                             chess_window.redraw();
                             redrawn(&mut group, &game);
@@ -222,11 +228,11 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
                     if game.turn == Player::Red {
                         // A complete turn consists of the AI's move and the Player's move.
                         // We must undo both to return to the previous state.
-                        if let Some(ai_move) = game.move_history.last().cloned() {
-                            game.undo_move(&ai_move);
+                        if let Some(ai_move) = ui_search.move_history.last().cloned() {
+                            ui_search.pop_move(&mut game, &ai_move);
                         }
-                        if let Some(player_move) = game.move_history.last().cloned() {
-                            game.undo_move(&player_move);
+                        if let Some(player_move) = ui_search.move_history.last().cloned() {
+                            ui_search.pop_move(&mut game, &player_move);
                         }
 
                         game.select_pos = Position { row: -1, col: -1 }; // Reset selection
@@ -243,20 +249,21 @@ pub fn ui(mut game: Board, mut engine: UCCIEngine) -> anyhow::Result<()> {
 }
 
 trait BoardExt {
-    fn click(&mut self, pos: (i32, i32));
+    fn click(&mut self, search: &mut SearchState, pos: (i32, i32));
     fn select(&mut self, pos: (i32, i32)) -> bool;
     fn move_to(
         &mut self,
+        search: &mut SearchState,
         from: Position, // 起手位置
         to: Position,   // 落子位置
     );
 }
 
 impl BoardExt for Board {
-    fn click(&mut self, pos: (i32, i32)) {
+    fn click(&mut self, search: &mut SearchState, pos: (i32, i32)) {
         let selected = self.select(pos);
         if !selected && self.chess_at(self.select_pos).player() == Some(self.turn) {
-            self.move_to(self.select_pos, pos.into());
+            self.move_to(search, self.select_pos, pos.into());
         }
     }
 
@@ -273,6 +280,7 @@ impl BoardExt for Board {
 
     fn move_to(
         &mut self,
+        search: &mut SearchState,
         from: Position, // 起手位置
         to: Position,   // 落子位置
     ) {
@@ -284,7 +292,7 @@ impl BoardExt for Board {
             capture: self.chess_at(to),
         };
         if self.is_move_legal(&m) {
-            self.do_move(&m);
+            search.push_move(self, &m);
         }
     }
 }

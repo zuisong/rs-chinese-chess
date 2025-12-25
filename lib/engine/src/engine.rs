@@ -1,5 +1,5 @@
-/* 引擎核心：对接棋盘与搜索，提供 UCCI 接口的核心能力 */
 use crate::board::{Board, Move, Position};
+use crate::search::SearchState;
 use regex::Regex;
 use std::io;
 
@@ -15,6 +15,7 @@ pub struct PreLoad {
 pub struct UCCIEngine {
     pub board: Board,
     pub book: Vec<PreLoad>,
+    pub search_state: SearchState,
 }
 
 impl UCCIEngine {
@@ -99,6 +100,7 @@ impl UCCIEngine {
         UCCIEngine {
             board: Board::init(),
             book,
+            search_state: SearchState::new(),
         }
     }
     pub fn search_in_book(&self) -> Option<String> {
@@ -206,9 +208,11 @@ impl UCCIEngine {
         for captures in regex.captures_iter(param) {
             if let Some(fen) = captures.name("fen") {
                 self.board = Board::from_fen(fen.as_str());
+                self.search_state.reset();
             }
             if let Some(_) = captures.name("startpos") {
                 self.board = Board::init();
+                self.search_state.reset();
             }
             if let Some(moves) = captures.name("moves") {
                 for m_str in moves.as_str().split(" ") {
@@ -225,7 +229,7 @@ impl UCCIEngine {
 
                     // Only apply the move if it is legal
                     if self.board.is_move_legal(&m) {
-                        self.board.apply_move(&m);
+                        self.search_state.push_move(&mut self.board, &m);
                     }
                 }
             }
@@ -239,7 +243,9 @@ impl UCCIEngine {
             println!("bestmove {}", m);
             return;
         }
-        let (value, best_move) = self.board.iterative_deepening(depth);
+        let (value, best_move) = self
+            .search_state
+            .iterative_deepening(&mut self.board, depth);
         if let Some(m) = best_move {
             if m.is_valid() {
                 println!("bestmove {}{} value {}", m.from.to_string(), m.to.to_string(), value);
@@ -268,7 +274,7 @@ mod tests {
         // engine.position("startpos moves b0c2");
         engine.go(4);
         println!("{:?}", engine.board.chesses);
-        println!("{} {}", engine.board.gen_counter, engine.board.counter);
+        println!("{} {}", engine.search_state.gen_counter, engine.search_state.counter);
     }
 
     #[test]
@@ -282,6 +288,6 @@ mod tests {
         println!("{:?}", moves);
         println!("{:?}", engine.board.chesses);
         engine.go(8);
-        println!("{} {}", engine.board.gen_counter, engine.board.counter);
+        println!("{} {}", engine.search_state.gen_counter, engine.search_state.counter);
     }
 }
