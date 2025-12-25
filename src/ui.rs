@@ -150,6 +150,16 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
                         game.click((x, y));
                         if game.move_history.len() > history_len_before {
                             // A move was made
+                            let last_move = &game.move_history[game.move_history.len() - 1];
+                            println!(
+                                "👤 玩家走棋: {:?} 从 ({}, {}) 到 ({}, {})",
+                                last_move.chess,
+                                last_move.from.row,
+                                last_move.from.col,
+                                last_move.to.row,
+                                last_move.to.col
+                            );
+
                             group.clear();
                             chess_window.redraw();
                             redrawn(&mut group, &game);
@@ -165,7 +175,7 @@ pub fn ui(mut game: Board) -> anyhow::Result<()> {
 
                             rayon::spawn(move || {
                                 // 在后台线程执行搜索
-                                let (_value, best_move) = board_clone.iterative_deepening(10);
+                                let (_value, best_move) = board_clone.iterative_deepening(6);
 
                                 // 释放思考标志
                                 *thinking_flag.lock().unwrap() = false;

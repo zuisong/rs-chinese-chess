@@ -10,21 +10,31 @@
  * - Move 记录一次落子信息，包括起点、终点、走子的棋种以及吃子信息
  * - Board 保存当前局面的完整状态：棋子排布、轮到哪一方、历史记录、Zobrist 哈希量等
  *
- * 主要功能（保持与现有实现一致）
+ * 主要功能
  * - 初始化棋盘、从 FEN/类 FEN 字符串加载局面
  * - 移动的应用、撤销、以及是否为合法走法的判定
- * - 走法生成、对局面中的吃子逻辑以及是否将军/吃子检查
- * - 简单评估函数、以及简化的搜索（α-β、PV 倍增、迭代深化、静态棋力评估）
- * - Zobrist 哈希值的维护与置换表接口初步实现（与外部 zobrist.rs 配合）
+ * - 走法生成：使用 MVV/LVA (最有价值受害者/最无价值攻击者) 启发式排序
+ * - 搜索算法：
+ *   - 迭代深化 (Iterative Deepening)
+ *   - PVS (Principal Variation Search) / Alpha-Beta 剪枝
+ *   - 静态搜索 (Quiescence Search) 处理激烈交换
+ *   - 置换表 (Transposition Table) 支持 Exact/Alpha/Beta 标志与 Mate 分数归一化，逻辑与 xq-web 对齐
+ *   - 历史启发 (History Heuristic) 与 杀手走法 (Killer Heuristic)
+ * - 评估函数：
+ *   - 基于子力价值 (Material) 和 位置价值表 (Piece-Square Tables)
+ *   - 价值表已与 xq-web 引擎完全同步
+ * - Zobrist 哈希：包含棋子布局与当前回合方 (Turn) 信息
+ *
+ * 并发模型
+ * - 使用 Rayon 线程池进行 AI 计算，避免阻塞 UI 线程
  *
  * 注意
- * - 本注释仅为帮助理解代码设计与实现细节，具体行为以代码为准
- * - 任何对实现的改动都应保持现有接口不变，确保编译通过
+ * - 本模块核心逻辑（搜索、评估、哈希）已与 xq-web (TypeScript) 版本高度对齐，以保证棋力表现
  */
 
 use std::vec;
 
-use crate::constant::{FEN_MAP, KILL, MAX, MAX_DEPTH, MIN, RECORD_SIZE, ZOBRIST_TABLE, ZOBRIST_TABLE_LOCK};
+use crate::constant::{FEN_MAP, MAX, MAX_DEPTH, MIN, RECORD_SIZE, ZOBRIST_TABLE, ZOBRIST_TABLE_LOCK};
 
 pub const BOARD_WIDTH: i32 = 9;
 pub const BOARD_HEIGHT: i32 = 10;
@@ -39,7 +49,13 @@ pub enum Chess {
 impl Chess {
     pub fn value(&self) -> i32 {
         match self.chess_type() {
-            Some(ct) => ct.type_value(),
+            Some(ct) => ct.value(),
+            None => 0,
+        }
+    }
+    pub fn material_value(&self) -> i32 {
+        match self.chess_type() {
+            Some(ct) => ct.material_value(),
             None => 0,
         }
     }
@@ -76,25 +92,30 @@ pub enum ChessType {
 impl ChessType {
     pub fn value(&self) -> i32 {
         match self {
-            ChessType::King => 1,
-            ChessType::Advisor => 2,
-            ChessType::Bishop => 3,
-            ChessType::Knight => 4,
-            ChessType::Rook => 5,
-            ChessType::Cannon => 6,
-            ChessType::Pawn => 0,
-        }
-    }
-    pub fn type_value(&self) -> i32 {
-        match self {
-            ChessType::King => 5,
+            ChessType::King => 0,
             ChessType::Advisor => 1,
-            ChessType::Bishop => 1,
+            ChessType::Bishop => 2,
             ChessType::Knight => 3,
             ChessType::Rook => 4,
-            ChessType::Cannon => 3,
-            ChessType::Pawn => 2,
+            ChessType::Cannon => 5,
+            ChessType::Pawn => 6,
         }
+    }
+
+    pub fn material_value(&self) -> i32 {
+        match self {
+            ChessType::King => 10000,
+            ChessType::Advisor => 20,
+            ChessType::Bishop => 20,
+            ChessType::Knight => 90,
+            ChessType::Rook => 200,
+            ChessType::Cannon => 100,
+            ChessType::Pawn => 10,
+        }
+    }
+
+    pub fn type_value(&self) -> i32 {
+        self.material_value()
     }
 
     pub fn move_value(&self) -> i32 {
@@ -177,7 +198,7 @@ impl Position {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Move {
     pub player: Player, // 玩家
     pub from: Position, // 起手位置
@@ -228,13 +249,20 @@ impl ToString for Position {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum HashFlag {
+    Alpha, // Score is an upper bound (Fail-low)
+    Beta,  // Score is a lower bound (Fail-high)
+    Exact, // Score is exact (PV node)
+}
+
 #[derive(Clone, Debug)]
 pub struct Record {
     pub value: i32,
     pub depth: i32,
+    pub flag: HashFlag,
     pub best_move: Option<Move>,
     pub zobrist_lock: u64,
-    pub turn: Player,
 }
 
 #[derive(Clone, Debug)]
@@ -245,6 +273,8 @@ pub struct Board {
     pub counter: i32,
     pub gen_counter: i32,
     pub move_history: Vec<Move>,
+    pub zobrist_history: Vec<u64>, // History of Zobrist keys (for repetition detection)
+    pub check_history: Vec<bool>,  // History of "is checked" status (for perpetual check detection)
     pub best_moves_last: Vec<Move>,
     pub records: Vec<Option<Record>>,
     pub zobrist_value: u64,
@@ -257,6 +287,8 @@ pub struct Board {
     // 索引：from_square_index * 90 + to_square_index
     // 总共 90 * 90 = 8100 种可能的走法
     pub history_table: Vec<i32>,
+    pub vl_red: i32,
+    pub vl_black: i32,
 }
 
 // 棋子是否在棋盘内
@@ -372,7 +404,6 @@ const PAWN_VALUE_TABLE: [[i32; BOARD_WIDTH as usize]; BOARD_HEIGHT as usize] = [
 
 const INITIATIVE_BONUS: i32 = 3;
 
-const RECORD_NONE: Option<Record> = None;
 impl Board {
     // 初始化标准象棋开局局面
     // 返回一个新的 Board 实例，棋子按标准布局摆放，红方先手
@@ -505,9 +536,14 @@ impl Board {
             // 初始化历史启发表：所有位置初始化为0
             // 90个格子 * 90个格子 = 8100 种可能的走法
             history_table: vec![0; 90 * 90],
+            zobrist_history: vec![],
+            check_history: vec![],
+            vl_red: 0,
+            vl_black: 0,
         };
-        board.zobrist_value = ZOBRIST_TABLE.calc_chesses(&board.chesses);
-        board.zobrist_value_lock = ZOBRIST_TABLE_LOCK.calc_chesses(&board.chesses);
+        board.update_initial_values();
+        board.zobrist_value = ZOBRIST_TABLE.calc_chesses(&board.chesses, board.turn);
+        board.zobrist_value_lock = ZOBRIST_TABLE_LOCK.calc_chesses(&board.chesses, board.turn);
         board
     }
     pub fn empty() -> Self {
@@ -525,6 +561,10 @@ impl Board {
             select_pos: Position { row: 1, col: 1 },
             killer_table: vec![[None, None]; MAX_DEPTH as usize],
             history_table: vec![0; 90 * 90],
+            zobrist_history: vec![],
+            check_history: vec![],
+            vl_red: 0,
+            vl_black: 0,
         }
     }
     pub fn from_fen(fen: &str) -> Self {
@@ -546,23 +586,53 @@ impl Board {
             }
             i += 1;
         }
-        board.zobrist_value = ZOBRIST_TABLE.calc_chesses(&board.chesses);
-        board.zobrist_value_lock = ZOBRIST_TABLE_LOCK.calc_chesses(&board.chesses);
         let turn = parts.next().unwrap();
         if turn == "b" {
             board.turn = Player::Black;
         }
+        board.zobrist_value = ZOBRIST_TABLE.calc_chesses(&board.chesses, board.turn);
+        board.zobrist_value_lock = ZOBRIST_TABLE_LOCK.calc_chesses(&board.chesses, board.turn);
+        board.zobrist_history.push(board.zobrist_value);
+        board
+            .check_history
+            .push(board.is_checked(board.turn));
+
+        board.update_initial_values();
         board
     }
     // 应用走子到棋盘，但不更新历史记录（用于临时模拟）
     // 参数 m: 要应用的走子
     pub fn apply_move(&mut self, m: &Move) {
+        // Record state before move for history
+        self.zobrist_history.push(self.zobrist_value);
+
         let chess = self.chess_at(m.from);
-        self.set_chess(m.to, chess);
+
+        // 增量更新评估值：移除起点的棋子价值
+        self.update_value(m.player, m.from, chess, false);
+
         self.set_chess(m.from, Chess::None);
+
+        // 如果有吃子，移除被吃棋子的价值
+        if m.capture != Chess::None {
+            // 使用被吃棋子的实际所属方，而不是m.player.next()
+            if let Some(capture_player) = m.capture.player() {
+                self.update_value(capture_player, m.to, m.capture, false);
+            }
+        }
+
+        // 增量更新评估值：添加终点的棋子价值
+        self.update_value(m.player, m.to, chess, true);
+
+        self.set_chess(m.to, chess);
         self.zobrist_value = ZOBRIST_TABLE.apply_move(self.zobrist_value, m);
         self.zobrist_value_lock = ZOBRIST_TABLE_LOCK.apply_move(self.zobrist_value_lock, m);
         self.turn = m.player.next();
+
+        // Record check status after move
+        // Note: self.turn is now the next player. is_checked checks if self.turn is checked.
+        self.check_history
+            .push(self.is_checked(self.turn));
     }
     // 执行走子并更新历史记录（用于实际游戏）
     // 参数 m: 要执行的走子
@@ -575,11 +645,30 @@ impl Board {
     // 参数 m: 要撤销的走子
     pub fn undo_move(&mut self, m: &Move) {
         let chess = self.chess_at(m.to);
+
+        // 反向恢复增量评估值
+        // 1. 移除终点的棋子价值
+        self.update_value(m.player, m.to, chess, false);
+
+        // 2. 如果有吃子，恢复被吃棋子的价值
+        if m.capture != Chess::None {
+            if let Some(capture_player) = m.capture.player() {
+                self.update_value(capture_player, m.to, m.capture, true);
+            }
+        }
+
+        // 3. 恢复起点的棋子价值
+        self.update_value(m.player, m.from, chess, true);
+
         self.set_chess(m.from, chess);
         self.set_chess(m.to, m.capture);
         self.zobrist_value = ZOBRIST_TABLE.undo_move(self.zobrist_value, m);
         self.zobrist_value_lock = ZOBRIST_TABLE_LOCK.undo_move(self.zobrist_value_lock, m);
         self.turn = m.player;
+
+        // Pop history
+        self.zobrist_history.pop();
+        self.check_history.pop();
         self.distance -= 1;
         self.move_history.pop();
     }
@@ -599,22 +688,35 @@ impl Board {
     // 判断当前局面是否适合使用 null move
     // 当己方子力足够时才使用 (避免残局中误判)
     fn null_move_okay(&self) -> bool {
-        // 简单检查：至少有一个车或炮
-        for row in 0..BOARD_HEIGHT {
-            for col in 0..BOARD_WIDTH {
-                let chess = self.chesses[row as usize][col as usize];
-                if let Some(player) = chess.player() {
-                    if player == self.turn {
-                        if let Some(ct) = chess.chess_type() {
-                            if ct == ChessType::Rook || ct == ChessType::Cannon {
-                                return true;
-                            }
-                        }
+        self.get_player_score(self.turn) > 200
+    }
+
+    pub fn get_player_score(&self, player: Player) -> i32 {
+        let mut score = 0;
+        for i in 0..BOARD_HEIGHT as usize {
+            for j in 0..BOARD_WIDTH as usize {
+                let chess = self.chess_at(Position::new(i as i32, j as i32));
+                if chess.belong_to(player) {
+                    if let Some(ct) = chess.chess_type() {
+                        let pos = if player == Player::Black {
+                            Position::new(i as i32, j as i32).flip()
+                        } else {
+                            Position::new(i as i32, j as i32)
+                        };
+                        score += match ct {
+                            ChessType::King => KING_VALUE_TABLE[pos.row as usize][pos.col as usize],
+                            ChessType::Advisor => ADVISOR_VALUE_TABLE[pos.row as usize][pos.col as usize],
+                            ChessType::Bishop => BISHOP_VALUE_TABLE[pos.row as usize][pos.col as usize],
+                            ChessType::Knight => KNIGHT_VALUE_TABLE[pos.row as usize][pos.col as usize],
+                            ChessType::Rook => ROOK_VALUE_TABLE[pos.row as usize][pos.col as usize],
+                            ChessType::Cannon => CANNON_VALUE_TABLE[pos.row as usize][pos.col as usize],
+                            ChessType::Pawn => PAWN_VALUE_TABLE[pos.row as usize][pos.col as usize],
+                        };
                     }
                 }
             }
         }
-        false
+        score
     }
     pub fn chess_at(&self, pos: Position) -> Chess {
         if in_board(pos) {
@@ -671,8 +773,16 @@ impl Board {
         None
     }
     pub fn king_eye_to_eye(&self) -> bool {
-        let posa = self.king_position(Player::Red).unwrap();
-        let posb = self.king_position(Player::Black).unwrap();
+        let posa = if let Some(pos) = self.king_position(Player::Red) {
+            pos
+        } else {
+            return false;
+        };
+        let posb = if let Some(pos) = self.king_position(Player::Black) {
+            pos
+        } else {
+            return false;
+        };
         if posa.col == posb.col {
             !self.has_chess_between(posa, posb)
         } else {
@@ -810,8 +920,113 @@ impl Board {
         count
     }
 
+    fn count_chess(&self, from: Position, to: Position) -> i32 {
+        let mut count = 0;
+        if from.row == to.row {
+            let min = from.col.min(to.col) + 1;
+            let max = from.col.max(to.col);
+            for c in min..max {
+                if self.chess_at(Position::new(from.row, c)) != Chess::None {
+                    count += 1;
+                }
+            }
+        } else {
+            let min = from.row.min(to.row) + 1;
+            let max = from.row.max(to.row);
+            for r in min..max {
+                if self.chess_at(Position::new(r, from.col)) != Chess::None {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    // Check if a move is valid (Pseudo-legal)
+    // Does not check if the king is left in check
+    pub fn is_valid_move(&self, mv: &Move) -> bool {
+        let from = mv.from;
+        let to = mv.to;
+
+        if !in_board(from) || !in_board(to) || from == to {
+            return false;
+        }
+
+        let from_chess = self.chess_at(from);
+        if !from_chess.belong_to(self.turn) {
+            return false;
+        }
+
+        let to_chess = self.chess_at(to);
+        if to_chess.belong_to(self.turn) {
+            return false;
+        }
+
+        let row_diff = (to.row - from.row).abs();
+        let col_diff = (to.col - from.col).abs();
+
+        if let Some(ct) = from_chess.chess_type() {
+            match ct {
+                ChessType::King => in_palace(to, self.turn) && (row_diff + col_diff == 1),
+                ChessType::Advisor => in_palace(to, self.turn) && (row_diff == 1 && col_diff == 1),
+                ChessType::Bishop => {
+                    in_country(to.row, self.turn)
+                        && row_diff == 2
+                        && col_diff == 2
+                        && self.chess_at(Position::new((from.row + to.row) / 2, (from.col + to.col) / 2)) == Chess::None
+                }
+                ChessType::Knight => {
+                    if row_diff == 1 && col_diff == 2 {
+                        self.chess_at(Position::new(from.row, (from.col + to.col) / 2)) == Chess::None
+                    } else if row_diff == 2 && col_diff == 1 {
+                        self.chess_at(Position::new((from.row + to.row) / 2, from.col)) == Chess::None
+                    } else {
+                        false
+                    }
+                }
+                ChessType::Rook => {
+                    if row_diff == 0 || col_diff == 0 {
+                        self.count_chess(from, to) == 0
+                    } else {
+                        false
+                    }
+                }
+                ChessType::Cannon => {
+                    if row_diff == 0 || col_diff == 0 {
+                        let count = self.count_chess(from, to);
+                        if to_chess == Chess::None {
+                            count == 0
+                        } else {
+                            count == 1
+                        }
+                    } else {
+                        false
+                    }
+                }
+                ChessType::Pawn => {
+                    let forward = if self.turn == Player::Red { -1 } else { 1 };
+                    if to.row == from.row + forward && col_diff == 0 {
+                        true
+                    } else {
+                        if !in_country(from.row, self.turn) && row_diff == 0 && col_diff == 1 {
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                }
+            }
+        } else {
+            false
+        }
+    }
+
     pub fn is_checked(&self, player: Player) -> bool {
-        let position_base = self.king_position(player).unwrap();
+        let position_base = if let Some(pos) = self.king_position(player) {
+            pos
+        } else {
+            return true;
+        };
 
         // 是否被炮将军
         let targets = self.generate_move_for_chess_type(ChessType::Cannon, position_base);
@@ -834,21 +1049,25 @@ impl Board {
 
         // 是否被马将军
         let mut targets = vec![];
-        if self.chess_at(position_base.up(1).left(1)) == Chess::None {
+        // 向上挡马脚
+        if self.chess_at(position_base.up(1)) == Chess::None {
             targets.push(position_base.up(2).left(1));
-            targets.push(position_base.up(1).left(2));
-        }
-        if self.chess_at(position_base.down(1).left(1)) == Chess::None {
-            targets.push(position_base.down(2).left(1));
-            targets.push(position_base.down(1).left(2));
-        }
-        if self.chess_at(position_base.up(1).right(1)) == Chess::None {
             targets.push(position_base.up(2).right(1));
-            targets.push(position_base.up(1).right(2));
         }
-        if self.chess_at(position_base.down(1).right(1)) == Chess::None {
+        // 向下挡马脚
+        if self.chess_at(position_base.down(1)) == Chess::None {
+            targets.push(position_base.down(2).left(1));
             targets.push(position_base.down(2).right(1));
-            targets.push(position_base.down(1).right(2));
+        }
+        // 向左挡马脚
+        if self.chess_at(position_base.left(1)) == Chess::None {
+            targets.push(position_base.left(2).up(1));
+            targets.push(position_base.left(2).down(1));
+        }
+        // 向右挡马脚
+        if self.chess_at(position_base.right(1)) == Chess::None {
+            targets.push(position_base.right(2).up(1));
+            targets.push(position_base.right(2).down(1));
         }
         for pos in targets {
             if self.chess_at(pos).belong_to(player.next()) {
@@ -1094,70 +1313,121 @@ impl Board {
                 }
             }
         }
-        moves.sort_by(|a, b| {
-            (self.chess_at(b.to).value() - self.chess_at(b.from).value())
-                .cmp(&(self.chess_at(a.to).value() - self.chess_at(a.from).value()))
-        });
         moves
     }
     // 简单的评价函数，计算双方棋子的子力差（包括位置加成）
     // 参数 player: 当前评估的玩家
     // 返回: 评估分数，正数表示 player 优势
     pub fn evaluate(&self, player: Player) -> i32 {
-        let mut red_score = 0;
-        let mut black_score = 0;
-        for i in 0..BOARD_HEIGHT as usize {
-            for j in 0..BOARD_WIDTH as usize {
-                let chess = self.chess_at(Position::new(i as i32, j as i32));
-                if let Some(ct) = chess.chess_type() {
-                    let pos = if chess.belong_to(Player::Black) {
-                        Position::new(i as i32, j as i32).flip()
-                    } else {
-                        Position::new(i as i32, j as i32)
-                    };
-                    let score = match ct {
-                        ChessType::King => KING_VALUE_TABLE[pos.row as usize][pos.col as usize],
-                        ChessType::Advisor => ADVISOR_VALUE_TABLE[pos.row as usize][pos.col as usize],
-                        ChessType::Bishop => BISHOP_VALUE_TABLE[pos.row as usize][pos.col as usize],
-                        ChessType::Knight => KNIGHT_VALUE_TABLE[pos.row as usize][pos.col as usize],
-                        ChessType::Rook => ROOK_VALUE_TABLE[pos.row as usize][pos.col as usize],
-                        ChessType::Cannon => CANNON_VALUE_TABLE[pos.row as usize][pos.col as usize],
-                        ChessType::Pawn => PAWN_VALUE_TABLE[pos.row as usize][pos.col as usize],
-                    };
-                    if chess.belong_to(Player::Black) {
-                        black_score += score
-                    } else {
-                        red_score += score
-                    }
+        if player == Player::Red {
+            self.vl_red - self.vl_black + INITIATIVE_BONUS
+        } else {
+            self.vl_black - self.vl_red + INITIATIVE_BONUS
+        }
+    }
+
+    // 计算单个棋子在特定位置的价值
+    fn get_chess_value(&self, pos: Position, chess_type: ChessType, player: Player) -> i32 {
+        let pos = if player == Player::Black { pos.flip() } else { pos };
+        match chess_type {
+            ChessType::King => KING_VALUE_TABLE[pos.row as usize][pos.col as usize],
+            ChessType::Advisor => ADVISOR_VALUE_TABLE[pos.row as usize][pos.col as usize],
+            ChessType::Bishop => BISHOP_VALUE_TABLE[pos.row as usize][pos.col as usize],
+            ChessType::Knight => KNIGHT_VALUE_TABLE[pos.row as usize][pos.col as usize],
+            ChessType::Rook => ROOK_VALUE_TABLE[pos.row as usize][pos.col as usize],
+            ChessType::Cannon => CANNON_VALUE_TABLE[pos.row as usize][pos.col as usize],
+            ChessType::Pawn => PAWN_VALUE_TABLE[pos.row as usize][pos.col as usize],
+        }
+    }
+
+    // 更新增量评估值
+    fn update_value(&mut self, player: Player, pos: Position, chess: Chess, is_add: bool) {
+        if let Some(ct) = chess.chess_type() {
+            let val = self.get_chess_value(pos, ct, player) + ct.material_value();
+            if player == Player::Red {
+                if is_add {
+                    self.vl_red += val;
+                } else {
+                    self.vl_red -= val;
+                }
+            } else {
+                if is_add {
+                    self.vl_black += val;
+                } else {
+                    self.vl_black -= val;
                 }
             }
         }
-        if player == Player::Red {
-            red_score - black_score + INITIATIVE_BONUS
-        } else {
-            black_score - red_score + INITIATIVE_BONUS
+    }
+
+    // 初始化/全量计算评估值
+    fn update_initial_values(&mut self) {
+        self.vl_red = 0;
+        self.vl_black = 0;
+        for i in 0..BOARD_HEIGHT as usize {
+            for j in 0..BOARD_WIDTH as usize {
+                let chess = self.chess_at(Position::new(i as i32, j as i32));
+                if let Some(player) = chess.player() {
+                    self.update_value(player, Position::new(i as i32, j as i32), chess, true);
+                }
+            }
         }
     }
-    pub fn find_record(&self) -> Option<Record> {
+
+    pub fn find_record(&self, alpha: i32, beta: i32, depth: i32) -> (Option<i32>, Option<Move>) {
         if let Some(record) = &self.records[(self.zobrist_value & (RECORD_SIZE - 1) as u64) as usize] {
-            if record.zobrist_lock == self.zobrist_value_lock && self.turn == record.turn {
-                Some(record.clone())
-            } else {
-                None
+            if record.zobrist_lock == self.zobrist_value_lock {
+                let mut value = record.value;
+                if value > 30000 {
+                    value -= self.distance;
+                } else if value < -30000 {
+                    value += self.distance;
+                }
+
+                if record.depth >= depth {
+                    match record.flag {
+                        HashFlag::Exact => return (Some(value), record.best_move.clone()),
+                        HashFlag::Alpha => {
+                            if value <= alpha {
+                                return (Some(value), record.best_move.clone());
+                            }
+                        }
+                        HashFlag::Beta => {
+                            if value >= beta {
+                                return (Some(value), record.best_move.clone());
+                            }
+                        }
+                    }
+                }
+                return (None, record.best_move.clone());
             }
-        } else {
-            None
         }
+        (None, None)
     }
-    pub fn add_record(&mut self, record: Record) {
-        if let Some(old_record) = &self.records[(self.zobrist_value & (RECORD_SIZE - 1) as u64) as usize] {
-            // 如果已存在，用深度较大的覆盖，depth越小，深度越大
-            if record.depth < old_record.depth {
-                self.records[(self.zobrist_value & (RECORD_SIZE - 1) as u64) as usize] = Some(record);
-            }
-        } else {
-            self.records[(self.zobrist_value & (RECORD_SIZE - 1) as u64) as usize] = Some(record);
+    pub fn add_record(&mut self, depth: i32, mut value: i32, flag: HashFlag, best_move: Option<Move>) {
+        if value > 30000 {
+            value += self.distance;
+        } else if value < -30000 {
+            value -= self.distance;
         }
+
+        let index = (self.zobrist_value & (RECORD_SIZE - 1) as u64) as usize;
+        // 深度优先替换策略：只有新记录深度 >= 原记录深度，或者是同一局面的不同（更准？）更新时才覆盖
+        // 但这里简化为深度优先：如果旧记录深度更大，则保留旧记录（除非旧记录是隔代的？）
+        // 简单策略：如果 depth >= old.depth 或者 总是覆盖?
+        // xq-web logic: if (hash.depth > depth) return;
+        if let Some(old_record) = &self.records[index] {
+            if old_record.depth > depth {
+                return;
+            }
+        }
+        self.records[index] = Some(Record {
+            value,
+            depth,
+            flag,
+            best_move,
+            zobrist_lock: self.zobrist_value_lock,
+        });
     }
 
     // 计算走法的历史启发索引
@@ -1221,49 +1491,41 @@ impl Board {
             None
         };
 
-        // 为每个走法计算排序分数
-        let mut move_scores: Vec<(Move, i32)> = moves
-            .iter()
-            .map(|mv| {
-                let mut score = 0;
-
-                // 最高优先级：Hash Move
-                if let Some(hm) = hash_move {
-                    if mv == hm {
-                        return (mv.clone(), i32::MAX);
-                    }
+        // 使用 sort_unstable_by_key 避免内存分配和不必要的复制
+        // 分数取反以实现降序排列（sort 是升序）
+        moves.sort_unstable_by_key(|mv| {
+            // 最高优先级：Hash Move
+            if let Some(hm) = hash_move {
+                if mv == hm {
+                    return i32::MIN;
                 }
+            }
 
-                // 杀手走法
-                if let Some(k1) = killer1 {
-                    if mv == k1 {
-                        return (mv.clone(), i32::MAX - 1);
-                    }
+            // 杀手走法
+            if let Some(k1) = killer1 {
+                if mv == k1 {
+                    return i32::MIN + 1;
                 }
-                if let Some(k2) = killer2 {
-                    if mv == k2 {
-                        return (mv.clone(), i32::MAX - 2);
-                    }
+            }
+            if let Some(k2) = killer2 {
+                if mv == k2 {
+                    return i32::MIN + 2;
                 }
+            }
 
-                // MVV/LVA (Most Valuable Victim / Least Valuable Aggressor)
-                // 吃子走法优先，吃价值高的子且用价值低的子吃
-                if mv.capture != Chess::None {
-                    score += mv.capture.value() * 10 - mv.chess.value();
-                }
+            let mut score = 0;
 
-                // 历史启发分数
-                score += self.get_history_score(mv);
+            // MVV/LVA (Most Valuable Victim / Least Valuable Aggressor)
+            // 吃子走法优先，吃价值高的子且用价值低的子吃
+            if mv.capture != Chess::None {
+                score += mv.capture.material_value() * 10 - mv.chess.material_value();
+            }
 
-                (mv.clone(), score)
-            })
-            .collect();
+            // 历史启发分数
+            score += self.get_history_score(mv);
 
-        // 按分数降序排序
-        move_scores.sort_by(|a, b| b.1.cmp(&a.1));
-
-        // 更新原 moves 向量
-        *moves = move_scores.into_iter().map(|(mv, _)| mv).collect();
+            -score
+        });
     }
     // Alpha-Beta 搜索与 PV 倍增（主搜索函数）
     // 参数 depth: 搜索深度
@@ -1271,16 +1533,29 @@ impl Board {
     // 参数 beta: Beta 值（上界）
     // 参数 allow_null: 是否允许 null move pruning
     // 返回: (评估分数, 最佳走子)
-    fn alpha_beta_pvs_internal(&mut self, depth: i32, mut alpha: i32, beta: i32, allow_null: bool) -> (i32, Option<Move>) {
+    fn alpha_beta_pvs_internal(
+        &mut self,
+        depth: i32,
+        mut alpha: i32,
+        beta: i32,
+        allow_null: bool,
+    ) -> (i32, Option<Move>) {
         // 尝试从置换表获取结果
-        let hash_move = if let Some(record) = self.find_record() {
-            if record.depth <= depth {
-                return (record.value, record.best_move);
+        let (tt_value, hash_move) = self.find_record(alpha, beta, depth);
+        if let Some(v) = tt_value {
+            return (v, hash_move);
+        }
+
+        // Repetition Check
+        // xq-web checks repStatus(1) > 0.
+        // Only checking if we are not at root? xq-web checks always in searchFull.
+        // distance > 0 ?
+        if self.distance > 0 {
+            let rep = self.rep_status(1);
+            if rep > 0 {
+                return (self.rep_value(rep), None);
             }
-            record.best_move
-        } else {
-            None
-        };
+        }
 
         if depth == 0 {
             self.counter += 1;
@@ -1288,7 +1563,6 @@ impl Board {
         }
 
         // Null Move Pruning
-        // 当不在被将军状态，且允许 null move，且局面适合时尝试
         const NULL_MOVE_REDUCTION: i32 = 2;
         if allow_null && depth >= 3 && !self.is_checked(self.turn) && self.null_move_okay() {
             self.do_null_move();
@@ -1299,18 +1573,63 @@ impl Board {
             }
         }
 
+        let mut hash_move_searched = false;
+
+        // Try Hash Move First (Lazy Generation)
+        if let Some(hm) = hash_move.as_ref() {
+            // Verify pseudo-legality of Hash Move
+            if self.is_valid_move(hm) {
+                self.do_move(hm);
+                // Verify legality (not leaving King in check)
+                if !self.is_checked(self.turn.next()) {
+                    hash_move_searched = true;
+                    // Hash Move is PV node, search with full window (or PVS logic?)
+                    // Usually Hash Move is the first move, so full window (-beta, -alpha).
+                    let v = -self
+                        .alpha_beta_pvs_internal(depth - 1, -beta, -alpha, true)
+                        .0;
+
+                    self.undo_move(hm);
+
+                    if v >= beta {
+                        self.update_killer_move(hm, self.distance as usize);
+                        self.update_history(hm, depth);
+                        self.add_record(depth, v, HashFlag::Beta, Some(hm.clone()));
+                        return (v, Some(hm.clone()));
+                    }
+                    if v > alpha {
+                        alpha = v;
+                    }
+                } else {
+                    self.undo_move(hm);
+                }
+            }
+        }
+
         let mut count = 0; // 记录尝试了多少种着法
-
-        // 生成所有走法
         let mut moves = self.generate_move(false);
+        self.sort_moves(&mut moves, None); // Hash move already handled or not passed to sort
 
-        // 使用改进的走法排序
-        self.sort_moves(&mut moves, hash_move.as_ref());
-
-        let mut best_move = None;
-        let mut best_value = MIN;
+        let mut best_move = if hash_move_searched { hash_move.clone() } else { None };
+        let mut best_value = alpha; // Start with alpha if we found a better move via Hash
+        let mut hash_flag = HashFlag::Alpha;
+        if best_value > MIN && hash_move_searched {
+            // If Hash Move improved alpha, flag might become Exact if no other move beats it?
+            // Actually standard logic: best_value = MIN. if v > alpha -> update alpha.
+            // Here we updated alpha.
+        } else {
+            best_value = MIN;
+        }
 
         for (i, m) in moves.iter().enumerate() {
+            if hash_move_searched {
+                if let Some(hm) = hash_move.as_ref() {
+                    if m == hm {
+                        continue;
+                    }
+                }
+            }
+
             self.do_move(&m);
             if self.is_checked(self.turn.next()) {
                 self.undo_move(&m);
@@ -1318,15 +1637,28 @@ impl Board {
             }
             count += 1;
 
-            let v = if i == 0 {
-                // 第一个走法用全窗口搜索
-                -self.alpha_beta_pvs_internal(depth - 1, -beta, -alpha, true).0
+            // Check Extension: if opponent is in check, don't reduce depth
+            let new_depth = if self.is_checked(self.turn) {
+                depth // Extend search when in check
             } else {
-                // 后续走法先用 null-window 搜索
-                let scout = -self.alpha_beta_pvs_internal(depth - 1, -(alpha + 1), -alpha, false).0;
+                depth - 1
+            };
+
+            let v = if count == 1 && !hash_move_searched {
+                // First move (and Hash Move wasn't searched or failed)
+                -self
+                    .alpha_beta_pvs_internal(new_depth, -beta, -alpha, true)
+                    .0
+            } else {
+                // Zoom with zero window (Scout)
+                let scout = -self
+                    .alpha_beta_pvs_internal(new_depth, -(alpha + 1), -alpha, false)
+                    .0;
                 if scout > alpha && scout < beta {
-                    // 如果在窗口内，重新用全窗口搜索
-                    -self.alpha_beta_pvs_internal(depth - 1, -beta, -alpha, true).0
+                    // Re-search with full window
+                    -self
+                        .alpha_beta_pvs_internal(new_depth, -beta, -alpha, true)
+                        .0
                 } else {
                     scout
                 }
@@ -1337,48 +1669,125 @@ impl Board {
             if v > best_value {
                 best_value = v;
                 if v >= beta {
-                    // Beta 截断：更新 killer moves 和 history
                     self.update_killer_move(&m, self.distance as usize);
                     self.update_history(&m, depth);
-                    // 保存到置换表
-                    self.add_record(Record {
-                        value: v,
-                        depth,
-                        best_move: Some(m.clone()),
-                        zobrist_lock: self.zobrist_value_lock,
-                        turn: self.turn,
-                    });
+                    self.add_record(depth, v, HashFlag::Beta, Some(m.clone()));
                     return (v, Some(m.clone()));
                 }
                 if v > alpha {
                     alpha = v;
                     best_move = Some(m.clone());
+                    hash_flag = HashFlag::Exact;
                 }
             }
         }
 
-        // 如果尝试的着法数为0,说明已经被绝杀
         if count == 0 {
-            return (KILL - depth, None);
+            // 被绝杀，返回 distance 相关分数
+            return (MIN + self.distance, None);
         }
 
-        // 保存到置换表
-        if best_move.is_some() {
-            self.add_record(Record {
-                value: best_value,
-                depth,
-                best_move: best_move.clone(),
-                zobrist_lock: self.zobrist_value_lock,
-                turn: self.turn,
-            });
-        }
+        // Repetition Check (Loop detection)
+        // Check "Ban" (Perpetual Check) or "Draw"
+        // In searchFull/alpha_beta, we check repStatus.
+        // xq-web logic:
+        // const vlRep = this.pos.repStatus(1);
+        // if (vlRep > 0) return this.pos.repValue(vlRep);
 
+        // We need to implement rep_status first, then integrate it.
+        // For now, keep as is.
+
+        self.add_record(depth, best_value, hash_flag, best_move.clone());
         (best_value, best_move)
     }
 
     // 公共接口：Alpha-Beta 搜索入口
     pub fn alpha_beta_pvs(&mut self, depth: i32, alpha: i32, beta: i32) -> (i32, Option<Move>) {
         self.alpha_beta_pvs_internal(depth, alpha, beta, true)
+    }
+
+    // Repetition Status
+    // Returns: 0=None, 1=Draw, 3=Self perp check (Loss), 5=Opp perp check (Win)
+    pub fn rep_status(&self, mut recur: i32) -> i32 {
+        let mut self_side = false;
+        let mut perp_check = true;
+        let mut opp_perp_check = true;
+
+        // Iterate backwards through history
+        // verify len > 0
+        if self.move_history.is_empty() {
+            return 0;
+        }
+
+        let len = self.move_history.len();
+        for i in (0..len).rev() {
+            let m = &self.move_history[i];
+            if m.capture != Chess::None {
+                break;
+            }
+
+            if self_side {
+                // Move made by current player (Self)
+                // If check_history[i] is true, it means Opponent is in check => Self is checking
+                if i < self.check_history.len() {
+                    perp_check &= self.check_history[i];
+                }
+
+                // Compare state BEFORE this move (zobrist_history[i]) with CURRENT state
+                if i < self.zobrist_history.len() && self.zobrist_history[i] == self.zobrist_value {
+                    recur -= 1;
+                    if recur == 0 {
+                        return 1 + (if perp_check { 2 } else { 0 }) + (if opp_perp_check { 4 } else { 0 });
+                    }
+                }
+            } else {
+                // Move made by Opponent
+                // If check_history[i] is true, it means Self is in check => Opponent is checking
+                if i < self.check_history.len() {
+                    opp_perp_check &= self.check_history[i];
+                }
+            }
+
+            self_side = !self_side;
+        }
+        0
+    }
+
+    pub fn rep_value(&self, rep_status: i32) -> i32 {
+        // 1=Draw: 0 (or draw value)
+        // 3=Self Perp Check (Loss): -BAN_VALUE
+        // 5=Opp Perp Check (Win): +BAN_VALUE (Actually -(-BAN) = BAN from opponent view? No, we return value for self)
+
+        // xq-web:
+        // vlReturn = ((vlRep & 2) == 0 ? 0 : this.banValue()) + ((vlRep & 4) == 0 ? 0 : -this.banValue());
+        // banValue() = distance - BAN_VALUE (Negative large number)
+        // If Self Check (2): returns banValue() (Negative -> Loss)
+        // If Opp Check (4): returns -banValue() (Positive -> Win)
+
+        // My BAN_VALUE (constant::MIN + distance?)
+        // Let's use 20000 margin.
+        // MIN is -32000 approx.
+        // WIN is around 30000.
+        // BAN (Loss) should be around -30000 + distance.
+
+        const BAN_VAL: i32 = 30000 - 100; // Slightly less than Mate
+
+        let val_loss = -BAN_VAL + self.distance;
+        let val_win = BAN_VAL - self.distance;
+
+        if (rep_status & 2) != 0 {
+            return val_loss;
+        }
+        if (rep_status & 4) != 0 {
+            return val_win;
+        }
+
+        // Draw
+        if (self.distance & 1) == 0 {
+            -20 // Negative draw value if even distance? xq-web uses slightly negative for draw to avoid 0?
+        } else {
+            20
+        }
     }
 
     // 静态搜索（Quiescence Search），处理吃子序列
@@ -1396,11 +1805,12 @@ impl Board {
         if v > alpha {
             alpha = v
         }
-        let moves = if self.is_checked(self.turn.next()) {
+        let mut moves = if self.is_checked(self.turn.next()) {
             self.generate_move(false)
         } else {
             self.generate_move(true)
         };
+        self.sort_moves(&mut moves, None);
         for m in moves {
             self.do_move(&m);
             if self.is_checked(self.turn.next()) {
@@ -1426,13 +1836,10 @@ impl Board {
             for depth in 3..max_depth + 1 {
                 // self.records = vec![RECORD_NONE; RECORD_SIZE as usize];
                 let (v, bm) = self.alpha_beta_pvs(depth, MIN, MAX);
+                println!("第{}层: Score: {}, Move: {:?}", depth, v, bm);
                 if depth == max_depth {
-                    println!("第{}层: {:?}", depth, bm);
                     return (v, bm);
                 }
-                self.best_moves_last = vec![];
-                self.best_moves_last.reverse();
-                println!("第{}层: {:?}", depth, self.best_moves_last);
             }
         } else {
             // self.records = vec![RECORD_NONE; RECORD_SIZE as usize];
@@ -1449,7 +1856,7 @@ mod tests {
     #[test]
     fn test_generate_move() {
         let mut board = Board::init();
-        for i in 0..1_000 {
+        for _ in 0..1_000 {
             board.generate_move(false);
         }
         assert_eq!(Board::init().generate_move(false).len(), 5 + 24 + 4 + 4 + 4 + 2 + 1);
@@ -1457,7 +1864,7 @@ mod tests {
     #[test]
     fn test_is_checked() {
         let mut board = Board::init();
-        for _i in 0..10_000 {
+        for _ in 0..10_000 {
             board.is_checked(Player::Red);
         }
         assert_eq!(Board::init().generate_move(false).len(), 5 + 24 + 4 + 4 + 4 + 2 + 1);

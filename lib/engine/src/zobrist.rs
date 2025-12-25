@@ -10,11 +10,12 @@
  - calc_chesses 用于计算当前棋盘的哈希值
  - apply_move/undo_move 用于在落子前后更新哈希值，确保棋局状态一致性
 */
-use crate::board::{BOARD_HEIGHT, BOARD_WIDTH, Chess, Move};
+use crate::board::{BOARD_HEIGHT, BOARD_WIDTH, Chess, Move, Player};
 
 #[derive(Debug)]
 pub struct Zobristable {
     hash_table: [[[u64; 7]; 90]; 2],
+    turn_hash: u64,
 }
 
 fn rand64() -> u64 {
@@ -25,6 +26,7 @@ impl Zobristable {
     pub fn new() -> Self {
         let mut z = Zobristable {
             hash_table: [[[0u64; 7]; 90]; 2],
+            turn_hash: 0,
         };
         for l in 0..2 {
             for m in 0..90 {
@@ -33,9 +35,10 @@ impl Zobristable {
                 }
             }
         }
+        z.turn_hash = rand64();
         z
     }
-    pub fn calc_chesses(&self, chesses: &[[Chess; BOARD_WIDTH as usize]; BOARD_HEIGHT as usize]) -> u64 {
+    pub fn calc_chesses(&self, chesses: &[[Chess; BOARD_WIDTH as usize]; BOARD_HEIGHT as usize], turn: Player) -> u64 {
         let mut value = 0 as u64;
         for i in 0..BOARD_HEIGHT {
             for j in 0..BOARD_WIDTH {
@@ -45,6 +48,9 @@ impl Zobristable {
                         [ct.value() as usize];
                 }
             }
+        }
+        if turn == Player::Black {
+            value ^= self.turn_hash;
         }
         value
     }
@@ -61,6 +67,8 @@ impl Zobristable {
             value ^= self.hash_table[m.capture.player().unwrap().value() as usize]
                 [(m.to.row * BOARD_WIDTH + m.to.col) as usize][ct.value() as usize];
         }
+        // 切换走子方
+        value ^= self.turn_hash;
         value
     }
     pub fn undo_move(&self, origin: u64, m: &Move) -> u64 {
@@ -77,13 +85,16 @@ mod test {
 
     #[test]
     fn test_zobrist() {
-        println!("{}", Zobristable::new().calc_chesses(&Board::init().chesses));
+        println!(
+            "{}",
+            Zobristable::new().calc_chesses(&Board::init().chesses, Player::Red)
+        );
     }
 
     #[test]
     fn test_zobrist_move() {
         let zorbis_table = Zobristable::new();
-        let hash = zorbis_table.calc_chesses(&Board::init().chesses);
+        let hash = zorbis_table.calc_chesses(&Board::init().chesses, Player::Red);
         let m = Move {
             player: crate::board::Player::Red,
             from: Position::new(0, 0),
