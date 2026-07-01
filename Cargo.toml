@@ -5,9 +5,8 @@ version = "0.1.0"
 
 [dependencies]
 anyhow = "1.0.94"
-bytes = "1.11.1"
 fltk = {version = "1.5.1", features = ["fltk-bundled"]}
-engine = { path = "./lib/engine" }
+engine = { path = "./crates/engine" }
 rayon = "1.11.0"
 mimalloc = "0.1.48"
 
@@ -19,4 +18,4 @@ opt-level = "z"
 panic = "abort"
 
 [workspace]
-members = ["lib/*"]
+members = ["crates/*"]
